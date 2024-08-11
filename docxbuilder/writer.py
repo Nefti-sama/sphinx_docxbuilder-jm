@@ -19,7 +19,7 @@
         Copyright 2010 by shimizukawa at gmail dot com (Sphinx-users.jp).
     :license: BSD, see LICENSE for details.
 """
-
+from pprint import pprint
 import hashlib
 import os
 import posixpath
@@ -1168,6 +1168,7 @@ class DocxTranslator(nodes.NodeVisitor):
             table_width = max(
                 base_width - convert_to_twip_size(margin, base_width), 1)
         if style is None:
+            #TODO: Make sure that the style is at least admonition
             style = next((
                 ' '.join(word.capitalize() for word in c.split('-'))
                 for c in node.get('classes') if c.startswith('admonition-')),
@@ -1985,7 +1986,8 @@ class DocxTranslator(nodes.NodeVisitor):
         self.visit_admonition_node(node)
 
     def depart_admonition(self, node):
-        self.depart_admonition_node(node, 'Admonition')
+        #self.depart_admonition_node(node, 'Admonition')
+        self.depart_admonition_node(node)
 
     def visit_substitution_definition(self, node): # pylint: disable=no-self-use
         raise nodes.SkipNode # TODO
