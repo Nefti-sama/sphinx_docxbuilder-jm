@@ -407,6 +407,15 @@ and section B uses the second section settings.
 
    contents
 
+.. note::
+
+   A ``docx-section-*`` class takes effect only on a section. Because
+   ``rst-class`` applies to the element which follows the directive, the
+   directive has to be placed directly above a section title; anywhere else
+   the class lands on a paragraph or a table, where it does nothing.
+   Docxbuilder warns about such a class, and about a class which begins with
+   ``docx-section`` but is not spelled like one of the forms above.
+
 .. _`class_based_customization_section`:
 
 Class based customization

@@ -91,6 +91,16 @@ customize the docx document properties.
   If true, Office Word will ask to update fields in generated documents when the document is opened.
   This is useful when generated documents references some document properties.
   Default: ``False``.
+**docx_bake_property_fields**
+  If true, the cached result of each ``DOCPROPERTY`` field in the style file is
+  replaced with the value the builder writes into the document properties.
+  Office Word recalculates such fields itself, but everything else --
+  LibreOffice in headless mode, ``pandoc``, PDF pipelines, text extraction --
+  shows the cached result, which in most style files is a placeholder such as
+  ``<n/a>``.
+  Fields whose rendering depends on the reader (dates) or on Word's own
+  conventions (booleans) keep their cached result.
+  Default: ``True``.
 **docx_table_options**
   A dictionary with table layout options.
   The following options are supported.

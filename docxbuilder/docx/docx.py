@@ -71,6 +71,8 @@ REL_TYPE_CORE = 'http://schemas.openxmlformats.org/package/2006/relationships/me
 REL_TYPE_STYLES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles'
 REL_TYPE_NUMBERING = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering'
 REL_TYPE_FOOTNOTES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes'
+REL_TYPE_HEADER = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header'
+REL_TYPE_FOOTER = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer'
 REL_TYPE_CUSTOM = 'http://purl.oclc.org/ooxml/officeDocument/relationships/customProperties'
 
 REL_TYPE_COMMENTS = 'http://purl.oclc.org/ooxml/officeDocument/relationships/comments'
@@ -385,6 +387,216 @@ def classify_properties(props):
         except RuntimeError as e:
             invalids[key] = str(e)
     return props_map, invalids
+
+# --- DOCPROPERTY field baking ------------------------------------------------
+# Word refreshes DOCPROPERTY fields when it opens a document, so a style file
+# usually ships them with a stale cached result (`<n/a>` is the common
+# placeholder). Every other consumer -- LibreOffice headless, pandoc, PDF
+# pipelines, plain text extraction -- reads that cached run verbatim. The
+# helpers below rewrite the cached result with the value actually written into
+# docProps, so the text is correct before Word ever touches the file.
+
+# DOCPROPERTY names of the built-in properties that Word spells differently
+# from the underlying XML element, mapped to (property category, key).
+BUILTIN_PROPERTY_FIELDS = {
+    'title': ('core', 'title'),
+    'author': ('core', 'creator'),
+    'subject': ('core', 'subject'),
+    'keywords': ('core', 'keywords'),
+    'comments': ('core', 'description'),
+    'category': ('core', 'category'),
+    'content status': ('core', 'contentStatus'),
+    'last author': ('core', 'lastModifiedBy'),
+    'revision number': ('core', 'revision'),
+    'manager': ('app', 'Manager'),
+    'company': ('app', 'Company'),
+}
+
+DOC_PROPERTY_INSTRUCTION = re.compile(r'\s*DOCPROPERTY\s+(?:"([^"]*)"|(\S+))')
+
+def format_property_value(value):
+    '''Render a property value the way Word displays it in a field.
+
+    Returns None when the rendering is not ours to decide -- dates follow the
+    reader's locale and booleans follow Word's own conventions -- so those
+    fields keep the cached result from the style file.
+    '''
+    if isinstance(value, bool) or isinstance(value, datetime.date):
+        return None
+    if isinstance(value, six.string_types):
+        return value
+    if isinstance(value, six.integer_types) or isinstance(value, float):
+        return str(value)
+    return None
+
+def make_doc_property_map(props):
+    '''Map lower-cased DOCPROPERTY field names to their resolved values.
+    '''
+    prop_map = {}
+    for name, value in props.get('custom', {}).items():
+        text = format_property_value(value)
+        if text is not None:
+            prop_map[name.lower()] = text
+    for field_name, (category, key) in BUILTIN_PROPERTY_FIELDS.items():
+        text = format_property_value(props.get(category, {}).get(key))
+        if text:
+            prop_map.setdefault(field_name, text)
+    return prop_map
+
+def get_doc_property_name(instruction):
+    '''Extract the property name from a field instruction, or None if the
+       instruction is not a DOCPROPERTY field.
+    '''
+    match = DOC_PROPERTY_INSTRUCTION.match(instruction)
+    if match is None:
+        return None
+    return match.group(1) if match.group(1) is not None else match.group(2)
+
+def get_run_text(run):
+    return ''.join(t.text or '' for t in run.findall(norm_name('w:t')))
+
+def make_field_run(style_source, contents):
+    '''Make a run carrying the run properties of 'style_source', so a
+       replaced field result keeps the formatting of the original.
+    '''
+    run = etree.Element(norm_name('w:r'))
+    if style_source is not None:
+        run_prop = style_source.find(norm_name('w:rPr'))
+        if run_prop is not None:
+            run.append(copy.deepcopy(run_prop))
+    run.append(contents)
+    return run
+
+def make_field_result_run(style_source, value):
+    text = etree.Element(norm_name('w:t'))
+    text.set(norm_name('xml:space'), 'preserve')
+    text.text = value
+    return make_field_run(style_source, text)
+
+def make_field_char_run(style_source, char_type):
+    fld_char = etree.Element(norm_name('w:fldChar'))
+    fld_char.set(norm_name('w:fldCharType'), char_type)
+    return make_field_run(style_source, fld_char)
+
+def bake_simple_field(field, prop_map):
+    '''Replace the result of a 'w:fldSimple' DOCPROPERTY field.
+    '''
+    name = get_doc_property_name(field.get(norm_name('w:instr'), ''))
+    if name is None:
+        return False
+    value = prop_map.get(name.lower())
+    if value is None:
+        return False
+    runs = field.findall(norm_name('w:r'))
+    if len(runs) == 1 and len(field) == 1 and get_run_text(runs[0]) == value:
+        return False
+    result = make_field_result_run(runs[0] if runs else None, value)
+    for child in list(field):
+        field.remove(child)
+    field.append(result)
+    return True
+
+def apply_doc_property_field(parent, field, prop_map):
+    '''Replace the cached result of one complex DOCPROPERTY field.
+    '''
+    if field['nested']:
+        # A field whose result is computed from other fields is none of our
+        # business; leave it for Word.
+        return False
+    name = get_doc_property_name(''.join(field['instructions']))
+    if name is None:
+        return False
+    value = prop_map.get(name.lower())
+    if value is None:
+        return False
+    results = field['results']
+    if len(results) == 1 and get_run_text(results[0]) == value:
+        return False
+    style_source = results[0] if results else field['begin']
+    result = make_field_result_run(style_source, value)
+    if field['separate'] is None:
+        # No cached result at all: give the field one, so readers that do not
+        # evaluate fields have something to show.
+        index = parent.index(field['end'])
+        parent.insert(index, make_field_char_run(style_source, 'separate'))
+        parent.insert(index + 1, result)
+    else:
+        parent.insert(parent.index(results[0] if results else field['end']),
+                      result)
+        for run in results:
+            parent.remove(run)
+    return True
+
+def bake_complex_fields(parent, prop_map):
+    '''Replace the cached results of the complex DOCPROPERTY fields whose runs
+       are direct children of 'parent'.
+    '''
+    run_tag = norm_name('w:r')
+    fld_char_tag = norm_name('w:fldChar')
+    fld_char_type = norm_name('w:fldCharType')
+    instr_tag = norm_name('w:instrText')
+    changed = False
+    depth = 0
+    field = None
+    for child in list(parent):
+        if child.tag != run_tag:
+            continue
+        fld_char = child.find(fld_char_tag)
+        char_type = None if fld_char is None else fld_char.get(fld_char_type)
+        if char_type == 'begin':
+            depth += 1
+            if depth == 1:
+                field = {'begin': child, 'end': None, 'separate': None,
+                         'instructions': [], 'results': [], 'nested': False}
+            elif field is not None:
+                field['nested'] = True
+            continue
+        if depth == 0:
+            continue
+        if char_type == 'end':
+            depth -= 1
+            if depth == 0 and field is not None:
+                field['end'] = child
+                if apply_doc_property_field(parent, field, prop_map):
+                    changed = True
+                field = None
+            continue
+        if depth != 1 or field is None:
+            continue
+        if char_type == 'separate':
+            field['separate'] = child
+        elif field['separate'] is None:
+            instr = child.find(instr_tag)
+            if instr is not None:
+                field['instructions'].append(instr.text or '')
+        else:
+            field['results'].append(child)
+    return changed
+
+def bake_doc_property_fields(xml, prop_map):
+    '''Rewrite the cached results of every DOCPROPERTY field in 'xml'.
+
+       Returns True if anything changed.
+    '''
+    if xml is None or not prop_map:
+        return False
+    changed = False
+    for field in list(xml.iter(norm_name('w:fldSimple'))):
+        if bake_simple_field(field, prop_map):
+            changed = True
+    run_tag = norm_name('w:r')
+    parents = {}
+    for fld_char in xml.iter(norm_name('w:fldChar')):
+        run = fld_char.getparent()
+        if run is None or run.tag != run_tag:
+            continue
+        parent = run.getparent()
+        if parent is not None:
+            parents[id(parent)] = parent
+    for parent in parents.values():
+        if bake_complex_fields(parent, prop_map):
+            changed = True
+    return changed
 
 def get_orient(section_prop):
     page_size = get_elements(section_prop, 'w:pgSz')[0]
@@ -1557,9 +1769,40 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             right = right or based_right
         return self._table_margin_cache.setdefault(style_id, (left, right))
 
-    def asbytes(self, set_update_fields, props):
+    def bake_property_fields_in_parts(
+            self, inherited_files, rel_attrs, prop_map):
+        '''Resolve the DOCPROPERTY fields of the header and footer parts
+           inherited from the style file.
+
+           Returns a list of (path, xml) for the parts that changed; the caller
+           writes those instead of copying the style file's originals.
+        '''
+        if not prop_map:
+            return []
+        basedir = posixpath.dirname(self.style_docx.docpath)
+        baked = []
+        seen = set()
+        for attr in rel_attrs:
+            if attr.get('Type') not in (REL_TYPE_HEADER, REL_TYPE_FOOTER):
+                continue
+            if attr.get('TargetMode', 'Internal') == 'External':
+                continue
+            path = posixpath.normpath(
+                posixpath.join(basedir, attr['Target'])).lstrip('/')
+            if path not in inherited_files or path in seen:
+                continue
+            seen.add(path)
+            xml = self.style_docx.get_xmltree(path)
+            if bake_doc_property_fields(xml, prop_map):
+                baked.append((path, xml))
+        return baked
+
+    def asbytes(self, set_update_fields, props, bake_property_fields=True):
         '''Generate the composed document as docx binary.
         '''
+        prop_map = make_doc_property_map(props) if bake_property_fields else {}
+        bake_doc_property_fields(self.document, prop_map)
+
         xml_files = [
             ('_rels/.rels', self.make_root_rels()),
             ('docProps/app.xml', self.make_app(props['app'])),
@@ -1569,6 +1812,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
 
         inherited_rel_attrs = self.collect_inherited_rel_attrs()
         footnotes = self.make_footnotes()
+        bake_doc_property_fields(footnotes, prop_map)
         numbering = self.make_numbering(inherited_rel_attrs, footnotes)
 
         document_rels = self.make_document_rels(inherited_rel_attrs)
@@ -1596,6 +1840,12 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         content_types = self.make_content_types(inherited_files)
         xml_files.append(('[Content_Types].xml', content_types))
 
+        # Keep the baked parts in inherited_files: make_content_types has
+        # already run, but the content type overrides are keyed off it.
+        baked_parts = self.bake_property_fields_in_parts(
+            inherited_files, inherited_rel_attrs, prop_map)
+        xml_files.extend(baked_parts)
+
         if self._cover_page_prop_info.does_create:
             xml_files.extend(
                 self.make_coverpage_props_items(props['cover_page']))
@@ -1608,7 +1858,9 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         bytes_io = io.BytesIO()
         with zipfile.ZipFile(
                 bytes_io, mode='w', compression=zipfile.ZIP_DEFLATED) as out:
-            self.style_docx.collect_items(out, inherited_files)
+            self.style_docx.collect_items(
+                out,
+                inherited_files.difference(path for path, _ in baked_parts))
             for xmlpath, xml in xml_files:
                 treestring = etree.tostring(
                     xml, xml_declaration=True,

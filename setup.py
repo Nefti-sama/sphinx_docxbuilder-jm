@@ -28,6 +28,8 @@ setup(
     ],
     install_requires=[
         "Sphinx>=1.7.6",
+        # docxbuilder.docx imports svg2png unconditionally.
+        "cairosvg",
         "lxml",
         "pillow",
         "six",

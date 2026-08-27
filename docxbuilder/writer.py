@@ -196,6 +196,9 @@ class DocxWriter(writers.Writer):
 #  DocxTranslator class for sphinx
 #
 
+SECTION_CLASS_PATTERN = re.compile(
+    r'^docx-section(?:-(portrait|landscape))?-(\d+)$')
+
 def to_error_string(contents):
     from xml.etree.ElementTree import tostring
     func = lambda xml: tostring(xml, encoding='utf8').decode('utf8')
@@ -905,7 +908,9 @@ class DocxTranslator(nodes.NodeVisitor):
                 % (key, reason))
         props['core'].setdefault(
             'language', self._builder.config.language or 'en')
-        return self._docx.asbytes(self._builder.config.docx_update_fields, props)
+        return self._docx.asbytes(
+            self._builder.config.docx_update_fields, props,
+            self._builder.config.docx_bake_property_fields)
 
     def _get_custom_style(self, classes, style_type):
         custom_styles = self._builder.config.docx_style_names
@@ -1107,8 +1112,7 @@ class DocxTranslator(nodes.NodeVisitor):
 
     def _set_section(self, node):
         for cls in node.get('classes'):
-            match = re.match(
-                r'^docx-section(?:-(portrait|landscape))?-(\d+)$', cls)
+            match = SECTION_CLASS_PATTERN.match(cls)
             if not match:
                 continue
             try:
@@ -1116,6 +1120,36 @@ class DocxTranslator(nodes.NodeVisitor):
                     int(match.group(2)), match.group(1))
             except RuntimeError as e:
                 self._logger.warning(e, location=node)
+
+    def _check_section_class(self, node):
+        '''Warn about a 'docx-section-*' class which will have no effect.
+
+           The class does something only on a section node, and only if it is
+           spelled exactly right. Both mistakes are otherwise silent: the
+           document builds, and the section property is quietly not switched.
+        '''
+        if not isinstance(node, nodes.Element):
+            return
+        for cls in node.get('classes', []):
+            if not cls.startswith('docx-section'):
+                continue
+            if SECTION_CLASS_PATTERN.match(cls) is None:
+                self._logger.warning(
+                    'Unknown section class "%s" is ignored;'
+                    ' expected docx-section-N, docx-section-portrait-N'
+                    ' or docx-section-landscape-N' % cls, location=node)
+            elif not isinstance(node, nodes.section):
+                self._logger.warning(
+                    'Section class "%s" is ignored because it is applied to'
+                    ' a %s node; only a section switches the section'
+                    ' property. Note that a "rst-class" directive applies to'
+                    ' the element following it, so it has to be placed'
+                    ' directly above a section title.'
+                    % (cls, node.tagname), location=node)
+
+    def dispatch_visit(self, node):
+        self._check_section_class(node)
+        return nodes.NodeVisitor.dispatch_visit(self, node)
 
     def _convert_math(self, latex, node):
         try:
