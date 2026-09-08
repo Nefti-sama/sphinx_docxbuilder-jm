@@ -2536,11 +2536,15 @@ class DocxTranslator(nodes.NodeVisitor):
     def visit_tabular_col_spec(self, _node): # pylint: disable=no-self-use
         raise nodes.SkipNode # TODO
 
-    def visit_acks(self, _node): # pylint: disable=no-self-use
-        raise nodes.SkipNode # TODO
+    def visit_acks(self, node):
+        # Sphinx guarantees a single bullet_list child, which renders itself;
+        # the HTML writer passes acks through the same way. LaTeX instead
+        # flattens the names into one comma-separated sentence, but a format
+        # with real lists has no reason to throw the list away.
+        self._append_bookmark_start(node.get('ids', []))
 
     def depart_acks(self, node):
-        pass
+        self._append_bookmark_end(node.get('ids', []))
 
     def visit_centered(self, node):
         self._append_bookmark_start(node.get('ids', []))
