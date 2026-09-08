@@ -25,7 +25,11 @@ import time
 import zipfile
 import six
 from lxml import etree
-from cairosvg import svg2png
+
+# cairosvg maps one CSS px to one device px, which prints blurry at Word's
+# resolutions. Oversampling raises the pixel density only: the display size
+# comes from the SVG's own dimensions and does not change with this.
+SVG_RASTER_SCALE = 2
 
 # All Word prefixes / namespace matches used in document.xml & core.xml.
 # LXML doesn't actually use prefixes (just the real namespace) , but these
@@ -1629,7 +1633,11 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         self._cover_page_prop_info = get_cover_page_prop_info(self.style_docx)
         self._add_required_relationships(self._cover_page_prop_info)
         self._hyperlink_rid_map = {} # target => relationship id
-        self._image_info_map = {} # imagepath => (relationship id, imagename)
+        # imagepath => (relationship id map, imagename, srcpath, content).
+        # Images are normally copied straight from srcpath, but a source that
+        # has to be converted first, as SVG is, is held as bytes in content so
+        # that nothing is written next to the user's sources.
+        self._image_info_map = {}
         self._img_num_pool = IdPool(self.style_docx.get_image_numbers())
 
         self.document = make_element_tree([['w:document'], [['w:body']]])
@@ -1866,8 +1874,11 @@ class DocxComposer: # pylint: disable=too-many-public-methods
                     xml, xml_declaration=True,
                     encoding='UTF-8', standalone='yes')
                 out.writestr(xmlpath, treestring)
-            for imgpath, (_, picname) in self._image_info_map.items():
-                out.write(imgpath, 'word/media/' + picname)
+            for _, picname, srcpath, content in self._image_info_map.values():
+                if content is None:
+                    out.write(srcpath, 'word/media/' + picname)
+                else:
+                    out.writestr('word/media/' + picname, content)
 
         return bytes_io.getvalue()
 
@@ -2096,27 +2107,40 @@ class DocxComposer: # pylint: disable=too-many-public-methods
     def add_image_relationship(self, imagepath, part):
         imagepath = os.path.abspath(imagepath)
 
-        rid_map, picname = self._image_info_map.get(imagepath, (None, None))
+        rid_map, picname, srcpath, content = self._image_info_map.get(
+            imagepath, (None, None, None, None))
         if rid_map is not None:
             rid = rid_map.get(part, None)
             if rid is not None:
                 return rid
         else:
-            fn_noext, picext = os.path.splitext(imagepath)
+            _, picext = os.path.splitext(imagepath)
+            srcpath = imagepath
+            content = None
             if picext == '.jpg':
                 picext = '.jpeg'
             elif picext == '.svg':
-                #For svg convert it to png
-                with open(imagepath,"r") as f:
-                    svg_code = f.read()
-                    outfile = '%s_docx-convert.png' % (fn_noext)
-                    svg2png(bytestring=svg_code,write_to=outfile)
-                    picext = '.png'
-                    imagepath = outfile
-                
-                #Somewhen, add the possibility to generate a png for word to display and embedd svg ein the background
-                #self.add_image_relationship(outfile,'%s_convert.png' % (fn_noext))
-            
+                # Word can not display SVG, so embed a rasterised copy. The
+                # bitmap is kept in memory rather than written beside the SVG,
+                # where it would linger in the user's source tree. Keying the
+                # cache on the original path is what lets a second use of the
+                # same SVG reuse this relationship instead of allocating one
+                # that points at a media part the next conversion overwrites.
+                try:
+                    from cairosvg import svg2png
+                except ImportError:
+                    raise RuntimeError(
+                        'SVG images need cairosvg, which is not installed')
+                # Handing cairosvg the path rather than the file's text
+                # leaves the encoding to the XML declaration instead of the
+                # locale, and sets the base for relative references. Those
+                # still will not load: cairosvg reads referenced files only
+                # under unsafe=True, which also enables entity expansion.
+                content = svg2png(url=imagepath, scale=SVG_RASTER_SCALE)
+                picext = '.png'
+
+                # Somewhen, add the possibility to generate a png for word to
+                # display and embed the svg in the background.
             rid_map = {}
             picname = 'image%d%s' % (self._img_num_pool.next_id(), picext)
 
@@ -2128,7 +2152,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             'Target': 'media/' + picname
         })
         rid_map[part] = rid
-        self._image_info_map[imagepath] = (rid_map, picname)
+        self._image_info_map[imagepath] = (rid_map, picname, srcpath, content)
         return rid
 
     def get_footnote_id(self, key):

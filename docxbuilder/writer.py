@@ -80,6 +80,66 @@ def findall(node, *args, **kwargs):
         finder = node.traverse
     return list(finder(*args, **kwargs))
 
+# Absolute SVG length units, as CSS px (the SVG user unit) per unit.
+SVG_UNITS_IN_PX = {
+    'px': 1.0,
+    'pt': 96.0 / 72.0,
+    'pc': 16.0,
+    'in': 96.0,
+    'cm': 96.0 / 2.54,
+    'mm': 96.0 / 25.4,
+}
+
+SVG_LENGTH_RE = re.compile(r'([+-]?[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?)\s*(.*)')
+
+def parse_svg_length(value):
+    '''Convert an SVG length to px, or return None if it is not absolute.
+
+    Percentages and font-relative units (em, ex) are resolved against a
+    viewport the writer does not have, so callers fall back to the viewBox.
+    '''
+    match = SVG_LENGTH_RE.match(value.strip())
+    if match is None:
+        return None
+    number, unit = match.groups()
+    if not unit:
+        return float(number)
+    factor = SVG_UNITS_IN_PX.get(unit.strip().lower())
+    if factor is None:
+        return None
+    return float(number) * factor
+
+def get_svg_size(filename):
+    '''Return the natural (width, height) of an SVG in px.
+
+    width and height are optional attributes and are frequently relative or
+    carry a unit, so fall back to the viewBox the way a renderer does.
+    '''
+    root = ET.parse(filename).getroot()
+    width = root.get('width')
+    height = root.get('height')
+    width = parse_svg_length(width) if width is not None else None
+    height = parse_svg_length(height) if height is not None else None
+    if width and height:
+        return (width, height)
+
+    viewbox = root.get('viewBox')
+    if viewbox is not None:
+        box = re.split(r'[\s,]+', viewbox.strip())
+        if len(box) == 4:
+            try:
+                vbwidth, vbheight = float(box[2]), float(box[3])
+            except ValueError:
+                vbwidth = vbheight = 0.0
+            if vbwidth > 0 and vbheight > 0:
+                # Only one of the two was absolute: keep the aspect ratio.
+                if width:
+                    return (width, width * vbheight / vbwidth)
+                if height:
+                    return (height * vbwidth / vbheight, height)
+                return (vbwidth, vbheight)
+    raise RuntimeError('Failed to get the image size of %s' % filename)
+
 def get_image_size(filename):
     if Image is None:
         raise RuntimeError(
@@ -89,14 +149,11 @@ def get_image_size(filename):
     # than using os.fspath, which needs Python 3.6.
     filename = str(filename)
     if filename.endswith(".svg"):
-        pass
-        tree = ET.parse(filename)
-        root = tree.getroot()
-    
+        width, height = get_svg_size(filename)
         cmperin = 2.54
-        width = int(root.attrib['width'].replace("px",""))
-        height = int(root.attrib['height'].replace("px",""))
-        dpi = 100
+        # get_svg_size reports CSS px, which are 1/96in by definition; this
+        # is the density cairosvg rasterises at too.
+        dpi = 96
         return (width * cmperin / dpi, height * cmperin / dpi)
 
     else:
