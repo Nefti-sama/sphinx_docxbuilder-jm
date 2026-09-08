@@ -2377,6 +2377,14 @@ class DocxTranslator(nodes.NodeVisitor):
         self._doc_stack[-1].add_text(')')
         self._append_bookmark_end(node.get('ids', []))
 
+    def visit_desc_type_parameter_list(self, node):
+        self._doc_stack[-1].add_text('[')
+        self._append_bookmark_start(node.get('ids', []))
+
+    def depart_desc_type_parameter_list(self, node):
+        self._doc_stack[-1].add_text(']')
+        self._append_bookmark_end(node.get('ids', []))
+
     def visit_desc_parameter(self, node):
         self._append_bookmark_start(node.get('ids', []))
         parent = node.parent
@@ -2386,6 +2394,19 @@ class DocxTranslator(nodes.NodeVisitor):
             self._push_style('Emphasis')
 
     def depart_desc_parameter(self, node):
+        if not node.get('noemph', False):
+            self._doc_stack[-1].pop_style()
+        self._append_bookmark_end(node.get('ids', []))
+
+    def visit_desc_type_parameter(self, node):
+        self._append_bookmark_start(node.get('ids', []))
+        parent = node.parent
+        if parent.children[0] is not node:
+            self._doc_stack[-1].add_text(parent.child_text_separator)
+        if not node.get('noemph', False):
+            self._push_style('Emphasis')
+
+    def depart_desc_type_parameter(self, node):
         if not node.get('noemph', False):
             self._doc_stack[-1].pop_style()
         self._append_bookmark_end(node.get('ids', []))
