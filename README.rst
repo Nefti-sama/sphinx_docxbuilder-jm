@@ -8,8 +8,12 @@ sphinx_docxbuilder-jm
 
 Added:
 
-* svg-support (basic implementation, svg is converted to png)
+* SVG images: the vector is embedded for Word 2016+, with a png fallback
 * Multiple cover pages (`<https://github.com/amedama41/docxbuilder/pull/12>`_)
+* Directives the original ignored: ``autosummary``, ``inheritance-diagram``,
+  ``productionlist``, ``acks``, and PEP 695 type parameters in signatures
+* Per-admonition styles, so ``.. note::`` and ``.. warning::`` can look different
+* Sphinx 9 / docutils 0.22 compatibility (``findall``, ``FileOutput``)
 
 Docxbuilder is a Sphinx extension to build docx formatted documents.
 
@@ -85,6 +89,58 @@ You can control the generated document by adding configurations into ``conf.py``
 
 For more details, see `the (original) documentation <https://docxbuilder.readthedocs.io/en/latest/>`_.
 
+SVG images
+==========
+
+Use ``.. image::`` or ``.. figure::`` with an ``.svg`` file, as with any other
+image::
+
+   .. image:: diagram.svg
+      :width: 12cm
+
+Each SVG is embedded twice: the vector original, which Word 2016 and later
+draw sharp at any zoom, and a png rendered with cairosvg for older clients.
+Nothing is written next to your sources; both copies live inside the docx.
+
+Sizing follows the SVG's own ``width`` and ``height`` in any absolute unit
+(``px``, ``pt``, ``pc``, ``in``, ``cm``, ``mm``), falling back to the
+``viewBox`` when they are missing or relative. ``:width:`` and ``:height:``
+override that as usual.
+
+``cairosvg`` is installed as a dependency. Without it the build still
+succeeds; every SVG is skipped with a warning instead of aborting.
+
+Images an SVG pulls in with an ``href`` (another svg, a bitmap) are inlined as
+data URIs, so they survive the move into the docx. References made through CSS
+``url()`` are not, and draw empty.
+
+Directives
+==========
+
+Beyond what the original builder handles:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Directive
+     - Rendered as
+   * - ``.. autosummary::``
+     - the summary table, and with ``:toctree:`` the generated stub pages
+   * - ``.. inheritance-diagram::``
+     - a graphviz image, through the same path as ``.. graphviz::``
+   * - ``.. productionlist::``
+     - a borderless two-column table, styled ``Production List``
+   * - ``.. acks::``
+     - the contained bullet list
+   * - ``.. py:class:: Widget[T]``
+     - PEP 695 type parameters, in square brackets
+
+Admonitions take one table style per type, not a shared one: ``.. note::``
+uses ``Admonition Note``, ``.. warning::`` uses ``Admonition Warning``, and a
+``.. admonition:: My Title`` uses ``Admonition My Title``. Define the style in
+your style file to change how that one type looks. Types you do not define get
+a style created from ``Based Admonition``, so nothing breaks if it is missing.
+
 Style file
 ==========
 
@@ -120,7 +176,8 @@ Table styles:
 
 * Table
 * Field List
-* Admonition Note
+* Production List
+* Admonition, Admonition Note, Admonition Warning, ...
 
 ****
 TODO
@@ -129,7 +186,7 @@ TODO
 - Support math role and directive.
 - Support tabular_col_spec directive.
 - Support URL path for images.
-- Cleanup generated png-files when using svg after the make-process
+- Follow CSS ``url()`` references inside SVG images.
 - Refine generated tables
 
 *******

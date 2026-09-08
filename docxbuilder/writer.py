@@ -344,10 +344,11 @@ class Paragraph(ParagraphElement):
     def add_break(self):
         self._contents_stack[-1].append(docx.make_break_run())
 
-    def add_picture(self, rid, picid, filename, width, height, alt):
+    def add_picture(self, rid, picid, filename, width, height, alt,
+                    svg_rid=None):
         self._contents_stack[-1].append(
             docx.make_inline_picture_run(
-                rid, picid, filename, width, height, alt))
+                rid, picid, filename, width, height, alt, svg_rid=svg_rid))
 
     def add_math(self, equation):
         try:
@@ -1349,11 +1350,12 @@ class DocxTranslator(nodes.NodeVisitor):
             if filepath is None or not os.path.exists(filepath):
                 raise RuntimeError('Failed to get filepath')
             width, height = self._get_image_scaled_size(node, filepath)
-            rid = self._docx.add_image_relationship(
+            rid, svg_rid = self._docx.add_image_relationship(
                 filepath, self._relationship_stack[-1])
             filename = os.path.basename(filepath)
             self._doc_stack[-1].add_picture(
-                rid, self._docx.new_id(), filename, width, height, alt)
+                rid, self._docx.new_id(), filename, width, height, alt,
+                svg_rid=svg_rid)
         except Exception as e: # pylint: disable=broad-except
             self._logger.warning(e, location=node)
             if alt_lang is not None and needs_pop:

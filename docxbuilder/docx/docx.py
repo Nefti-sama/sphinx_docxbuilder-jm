@@ -15,13 +15,17 @@
   See LICENSE for licensing information.
 '''
 
+import base64
 import copy
 import datetime
 import io
+import mimetypes
 import os
 import posixpath
 import re
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 import six
 from lxml import etree
@@ -30,6 +34,15 @@ from lxml import etree
 # resolutions. Oversampling raises the pixel density only: the display size
 # comes from the SVG's own dimensions and does not change with this.
 SVG_RASTER_SCALE = 2
+
+# The a:ext uri Word 2016 stamps on the extension holding an SVG blip. The
+# value is fixed by the format; clients match on it and ignore anything else.
+SVG_BLIP_EXT_URI = '{96DAC541-7B7A-43D3-8B79-37D633B846F1}'
+
+# The attributes an SVG points at an external file with. References made
+# through CSS url() are not rewritten, so an SVG that pulls a bitmap in
+# through a stylesheet still draws empty.
+SVG_HREF_ATTRS = ('href', '{http://www.w3.org/1999/xlink}href')
 
 # All Word prefixes / namespace matches used in document.xml & core.xml.
 # LXML doesn't actually use prefixes (just the real namespace) , but these
@@ -50,6 +63,7 @@ NSPREFIXES = {
     'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
     'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
     'pic': 'http://schemas.openxmlformats.org/drawingml/2006/picture',
+    'asvg': 'http://schemas.microsoft.com/office/drawing/2016/SVG/main',
     # Properties (core and extended)
     'cp': "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
     'dc': "http://purl.org/dc/elements/1.1/",
@@ -839,10 +853,14 @@ def make_break_run():
 
 def make_inline_picture_run(
         rid, picid, picname, cmwidth, cmheight, picdescription,
-        nochangeaspect=True, nochangearrowheads=True):
+        nochangeaspect=True, nochangearrowheads=True, svg_rid=None):
     '''
       Take a relationship id, picture file name, and return a run element
       containing the image
+
+      svg_rid, when given, names a vector copy of the same image. Word 2016
+      and later draw that and ignore rid; older clients know nothing about
+      the extension carrying it and draw the raster image rid points at.
 
       This function is based on 'python-docx' library
     '''
@@ -855,6 +873,15 @@ def make_inline_picture_run(
         'cx': str(int(cmwidth * emupercm)),
         'cy': str(int(cmheight * emupercm))
     }
+
+    blip_tree = [['a:blip', {'r:embed': rid}]]
+    if svg_rid is not None:
+        blip_tree.append(
+            [['a:extLst'],
+             [['a:ext', {'uri': SVG_BLIP_EXT_URI}],
+              [['asvg:svgBlip', {'r:embed': svg_rid}]]
+             ]
+            ])
 
     # There are 3 main elements inside a picture
     pic_tree = [
@@ -871,7 +898,7 @@ def make_inline_picture_run(
         # The Blipfill - specifies how the image fills the picture
         # area (stretch, tile, etc.)
         [['pic:blipFill'],
-         [['a:blip', {'r:embed': rid}]],
+         blip_tree,
          [['a:srcRect']],
          [['a:stretch'], [['a:fillRect']]]
         ],
@@ -1602,6 +1629,80 @@ def collect_referenced_footnotes(footnotes, xml):
             footnote_id_map[int(fid)] = fid
     return footnote_map, footnote_id_map, footnote_id_pool
 
+def read_as_data_uri(basedir, href):
+    '''Return what href points at as a data URI, or None to leave it alone.
+
+    Only local image files are read. Fragments, data URIs and anything named
+    over the network are already self-contained or out of reach, and a target
+    that is missing or is not an image is left alone too, so that a stray
+    reference can not pull an unrelated file into the document.
+    '''
+    if not href or href.startswith('#'):
+        return None
+    parsed = urllib.parse.urlparse(href)
+    if parsed.scheme == 'file':
+        path = urllib.request.url2pathname(parsed.path)
+    elif parsed.scheme:
+        return None
+    else:
+        path = urllib.parse.unquote(parsed.path)
+    path = os.path.join(basedir, path)
+
+    mimetype, _ = mimetypes.guess_type(path)
+    if mimetype is None or not mimetype.startswith('image/'):
+        return None
+    try:
+        with open(path, 'rb') as target:
+            data = target.read()
+    except OSError:
+        return None
+    return 'data:%s;base64,%s' % (
+        mimetype, base64.b64encode(data).decode('ascii'))
+
+
+def inline_svg_references(imagepath):
+    '''Return the SVG with its referenced images inlined, or None if it has
+    none to inline.
+
+    Both ways of drawing the image read the file away from its directory:
+    cairosvg opens no local file unless entity expansion is enabled with it,
+    and the copy Word draws is a package part with nothing to resolve a
+    relative path against. Turning the references into data URIs makes the
+    image self-contained, so it draws the same either way.
+    '''
+    tree = etree.parse(imagepath)
+    basedir = os.path.dirname(imagepath)
+    inlined = False
+    for elem in tree.getroot().iter():
+        for attr in SVG_HREF_ATTRS:
+            data_uri = read_as_data_uri(basedir, elem.get(attr))
+            if data_uri is not None:
+                elem.set(attr, data_uri)
+                inlined = True
+    if not inlined:
+        # Leave the source to be embedded as it is rather than round-tripping
+        # it through the parser for nothing.
+        return None
+    return etree.tostring(tree, xml_declaration=True, encoding='UTF-8')
+
+
+def rasterize_svg(imagepath, content=None):
+    '''Render an SVG to PNG bytes, for clients that can not draw the vector.
+
+    The bitmap is returned rather than written beside the SVG, where it would
+    linger in the user's source tree.
+    '''
+    try:
+        from cairosvg import svg2png
+    except ImportError:
+        raise RuntimeError('SVG images need cairosvg, which is not installed')
+    if content is not None:
+        return svg2png(bytestring=content, scale=SVG_RASTER_SCALE)
+    # Handing cairosvg the path rather than the file's text leaves the
+    # encoding to the XML declaration instead of the locale.
+    return svg2png(url=imagepath, scale=SVG_RASTER_SCALE)
+
+
 #
 # DocxComposer Class
 #
@@ -1633,10 +1734,12 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         self._cover_page_prop_info = get_cover_page_prop_info(self.style_docx)
         self._add_required_relationships(self._cover_page_prop_info)
         self._hyperlink_rid_map = {} # target => relationship id
-        # imagepath => (relationship id map, imagename, srcpath, content).
-        # Images are normally copied straight from srcpath, but a source that
-        # has to be converted first, as SVG is, is held as bytes in content so
-        # that nothing is written next to the user's sources.
+        # media key => (relationship id map, imagename, srcpath, content).
+        # The key is the image path, except for the raster copy of an SVG,
+        # which is keyed (imagepath, 'svg') so both parts of one source file
+        # can be cached. Media is normally copied straight from srcpath, but
+        # a part that has to be generated, as that raster copy is, is held as
+        # bytes in content so nothing is written next to the user's sources.
         self._image_info_map = {}
         self._img_num_pool = IdPool(self.style_docx.get_image_numbers())
 
@@ -2104,43 +2207,23 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         self._hyperlink_rid_map[target] = rid_map
         return rid
 
-    def add_image_relationship(self, imagepath, part):
-        imagepath = os.path.abspath(imagepath)
+    def _add_media_relationship(self, key, part, make_media):
+        '''Return the relationship id of a media part, adding it if new.
 
+        key identifies the media part in the cache, which is what makes a
+        second use of the same image reuse the relationship instead of
+        allocating one that points at a media part the next call overwrites.
+        make_media is consulted only the first time key is seen, and returns
+        the (extension, srcpath, content) of the part to embed.
+        '''
         rid_map, picname, srcpath, content = self._image_info_map.get(
-            imagepath, (None, None, None, None))
+            key, (None, None, None, None))
         if rid_map is not None:
             rid = rid_map.get(part, None)
             if rid is not None:
                 return rid
         else:
-            _, picext = os.path.splitext(imagepath)
-            srcpath = imagepath
-            content = None
-            if picext == '.jpg':
-                picext = '.jpeg'
-            elif picext == '.svg':
-                # Word can not display SVG, so embed a rasterised copy. The
-                # bitmap is kept in memory rather than written beside the SVG,
-                # where it would linger in the user's source tree. Keying the
-                # cache on the original path is what lets a second use of the
-                # same SVG reuse this relationship instead of allocating one
-                # that points at a media part the next conversion overwrites.
-                try:
-                    from cairosvg import svg2png
-                except ImportError:
-                    raise RuntimeError(
-                        'SVG images need cairosvg, which is not installed')
-                # Handing cairosvg the path rather than the file's text
-                # leaves the encoding to the XML declaration instead of the
-                # locale, and sets the base for relative references. Those
-                # still will not load: cairosvg reads referenced files only
-                # under unsafe=True, which also enables entity expansion.
-                content = svg2png(url=imagepath, scale=SVG_RASTER_SCALE)
-                picext = '.png'
-
-                # Somewhen, add the possibility to generate a png for word to
-                # display and embed the svg in the background.
+            picext, srcpath, content = make_media()
             rid_map = {}
             picname = 'image%d%s' % (self._img_num_pool.next_id(), picext)
 
@@ -2152,8 +2235,48 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             'Target': 'media/' + picname
         })
         rid_map[part] = rid
-        self._image_info_map[imagepath] = (rid_map, picname, srcpath, content)
+        self._image_info_map[key] = (rid_map, picname, srcpath, content)
         return rid
+
+    def add_image_relationship(self, imagepath, part):
+        '''Return the (rid, svg_rid) pair identifying an image.
+
+        svg_rid is None for images Word draws directly. An SVG is embedded
+        twice instead: as the vector original svg_rid names, and as the
+        raster copy rid names for clients that can not draw the vector.
+        '''
+        imagepath = os.path.abspath(imagepath)
+        _, picext = os.path.splitext(imagepath)
+
+        if picext == '.svg':
+            svg = None
+            read = False
+
+            def load_svg():
+                # Both media parts come out of one read of the source, which
+                # neither needs when the cache already holds them.
+                nonlocal svg, read
+                if not read:
+                    svg = inline_svg_references(imagepath)
+                    read = True
+                return svg
+
+            rid = self._add_media_relationship(
+                imagepath, part,
+                lambda: ('.png', imagepath, rasterize_svg(
+                    imagepath, load_svg())))
+            # A second cache key, so both parts of the same source file get
+            # their own media name and relationship.
+            svg_rid = self._add_media_relationship(
+                (imagepath, 'svg'), part,
+                lambda: ('.svg', imagepath, load_svg()))
+            return (rid, svg_rid)
+
+        if picext == '.jpg':
+            picext = '.jpeg'
+        rid = self._add_media_relationship(
+            imagepath, part, lambda: (picext, imagepath, None))
+        return (rid, None)
 
     def get_footnote_id(self, key):
         fid = self._footnote_id_pool.next_id()
