@@ -68,6 +68,18 @@ def is_sphinx_version_lower_than(version):
     major, minor, patch, _, _ = version_info
     return (major, minor, patch) < version
 
+def findall(node, *args, **kwargs):
+    """Return a list of the nodes matching the given condition.
+
+    Node.findall supersedes the deprecated Node.traverse, but was only added
+    in docutils 0.18, so fall back for older versions. A list is returned,
+    as traverse did, because callers insert into the tree while iterating.
+    """
+    finder = getattr(node, 'findall', None)
+    if finder is None:
+        finder = node.traverse
+    return list(finder(*args, **kwargs))
+
 def get_image_size(filename):
     if Image is None:
         raise RuntimeError(
@@ -2673,8 +2685,8 @@ class DocxTranslator(nodes.NodeVisitor):
         if toctree is None:
             return []
         outlines = []
-        for outline in toctree.traverse(
-                addnodes.compact_paragraph, include_self=False):
+        for outline in findall(
+                toctree, addnodes.compact_paragraph, include_self=False):
             classes = outline.get('classes')
             level_class = next(c for c in classes if c.startswith('toctree-l'))
             ref = outline[0]

@@ -13,14 +13,14 @@
 import os
 
 from docutils import nodes
-from docutils.io import BinaryFileOutput
+from docutils.io import FileOutput
 from sphinx import addnodes
 from sphinx.builders import Builder
 from sphinx.util import logging
 from sphinx.util.docutils import new_document
 from sphinx.util.osutil import ensuredir
 
-from docxbuilder.writer import DocxWriter, DocxTranslator
+from docxbuilder.writer import DocxWriter, DocxTranslator, findall
 
 
 class DocxBuilder(Builder):
@@ -62,7 +62,7 @@ class DocxBuilder(Builder):
         tree = self.env.get_doctree(master)
         if toctree_only:
             doc = new_document('docxbuilder/builder.py')
-            for toctree in tree.traverse(addnodes.toctree):
+            for toctree in findall(tree, addnodes.toctree):
                 # ids is not assigned to toctree, but to the parent
                 toctree.get('ids').extend(toctree.parent.get('ids'))
                 doc.append(toctree)
@@ -115,7 +115,8 @@ class DocxBuilder(Builder):
     def write_doc(self, docname, doctree):
         outfilename = os.path.join(self.outdir, docname)
         ensuredir(os.path.dirname(outfilename))
-        destination = BinaryFileOutput(destination_path=outfilename)
+        # FileOutput handles bytes; BinaryFileOutput is removed in docutils 0.24
+        destination = FileOutput(destination_path=outfilename, mode='wb')
         self.writer.write(doctree, destination)
 
     def finish(self):
@@ -124,7 +125,7 @@ class DocxBuilder(Builder):
 def insert_all_toctrees(tree, docname, env, traversed):
     tree = tree.deepcopy()
     env.apply_post_transforms(tree, docname)
-    for toctreenode in tree.traverse(addnodes.toctree):
+    for toctreenode in findall(tree, addnodes.toctree):
         nodeid = 'docx_expanded_toctree%d' % id(toctreenode)
         newnodes = nodes.container(ids=[nodeid])
         toctreenode['docx_expanded_toctree_refid'] = nodeid
