@@ -30,6 +30,7 @@ from docutils import nodes, writers
 from sphinx import addnodes, version_info
 from sphinx.environment.adapters.toctree import TocTree
 from sphinx.ext import graphviz
+from sphinx.ext.inheritance_diagram import get_graph_hash
 from sphinx.locale import admonitionlabels, _
 from sphinx.util import logging
 
@@ -71,6 +72,10 @@ def get_image_size(filename):
     if Image is None:
         raise RuntimeError(
             'image size not fully specified and PIL not installed')
+    # graphviz.render_dot and other Sphinx APIs hand back path objects whose
+    # str behaviour is deprecated and goes away in Sphinx 10. Coerce rather
+    # than using os.fspath, which needs Python 3.6.
+    filename = str(filename)
     if filename.endswith(".svg"):
         pass
         tree = ET.parse(filename)
@@ -2543,6 +2548,23 @@ class DocxTranslator(nodes.NodeVisitor):
             return filepath
         self.visit_image_node(
             node, node.get('alt', (node['code'], 'dot')), get_filepath)
+
+    def visit_inheritance_diagram(self, node):
+        # inheritance_diagram derives from the graphviz node, but carries an
+        # InheritanceGraph instead of ready-made dot code, so generate the code
+        # first and then reuse the graphviz path. visit_image_node raises
+        # SkipNode, which also discards the pending_xref children the extension
+        # attaches for the HTML image map.
+        def get_filepath(self, node):
+            code = node['graph'].generate_dot(
+                'inheritance%s' % get_graph_hash(node), env=self._builder.env)
+            _fname, filepath = graphviz.render_dot(
+                self, code, {}, 'png', 'inheritance')
+            if filepath is None:
+                raise RuntimeError('Failed to generate an inheritance diagram')
+            return filepath
+        self.visit_image_node(
+            node, 'Inheritance diagram of ' + node['content'], get_filepath)
 
     def visit_autosummary_table(self, node):
         self._append_bookmark_start(node.get('ids', []))
