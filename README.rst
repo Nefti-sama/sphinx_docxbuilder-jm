@@ -28,6 +28,33 @@ Install
 Add to your requirements.txt:
 ``-e git://github.com/Nefti-sama/sphinx_docxbuilder-jm.git#egg=sphinx_docxbuilder-jm``
 
+***********
+Development
+***********
+
+The default style file ``docxbuilder/docx/style.docx`` is generated, not
+committed: ``create_style_file.py`` zips ``style_file/docx/`` into it, and
+``.gitignore`` excludes the result. ``setup.py`` hooks that into the ``build``
+command, but a PEP 660 editable install (``pip install -e .`` with any recent
+pip) does not run the legacy ``build`` cmdclass, so the file is never created.
+
+After cloning the repository, and after every ``git clean -xdf`` or ``make
+clean``, regenerate it::
+
+   python create_style_file.py
+
+Without it, any build which does not set ``docx_style`` in **conf.py** aborts
+with::
+
+   FileNotFoundError: [Errno 2] No such file or directory: '.../docxbuilder/docx/style.docx'
+
+Edit the default style under ``style_file/docx/``, not ``style.docx`` itself;
+the latter is overwritten on the next regeneration. ``make update_style_file``
+does the full round trip, rebuilding ``style_file/docx/`` from the Sphinx
+project in ``style_file/`` first; note that it calls
+``./create_style_file.py``, which needs the executable bit and a ``python``
+on PATH.
+
 *****
 Usage
 *****
