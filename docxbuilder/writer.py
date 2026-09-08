@@ -2459,11 +2459,73 @@ class DocxTranslator(nodes.NodeVisitor):
     def depart_desc_content(self, node):
         self._append_bookmark_end(node.get('ids', []))
 
-    def visit_productionlist(self, _node): # pylint: disable=no-self-use
-        raise nodes.SkipNode # TODO
+    def visit_productionlist(self, node):
+        self._append_bookmark_start(node.get('ids', []))
+        table_width = self._ctx_stack[-1].paragraph_width
+        tbl = self._append_table(
+            'Production List', table_width, [0.25, 0.75], True,
+            fit_content=True)
+        tbl.add_stub() # keep the token name column from wrapping
+        tbl.start_body()
 
     def depart_productionlist(self, node):
-        pass
+        self._pop_and_append_table()
+        self._append_bookmark_end(node.get('ids', []))
+
+    @staticmethod
+    def _split_production(node):
+        """Split a production node into (name, separator, definition).
+
+        Sphinx builds each production as an optional literal_strong holding the
+        token name, a Text separator padding ' ::= ' so that every rule of the
+        block lines up in a fixed-width font, the definition, and a trailing
+        newline. Here the table does the aligning, so the padding and the
+        newline are dropped and only the bare separator is kept. Continuation
+        lines have an empty tokenname, no literal_strong and an all-space
+        separator; they become a row with an empty name cell.
+        """
+        children = list(node.children)
+        if (children and isinstance(children[-1], nodes.Text)
+                and not children[-1].astext().strip()):
+            children.pop()
+        name = []
+        if children and isinstance(children[0], addnodes.literal_strong):
+            name.append(children.pop(0))
+        separator = ''
+        if children and isinstance(children[0], nodes.Text):
+            text = children[0].astext().strip()
+            if text in ('', '::='):
+                separator = text
+                children.pop(0)
+        return name, separator, children
+
+    def visit_production(self, node):
+        name, separator, definition = DocxTranslator._split_production(node)
+        self._doc_stack[-1].add_row()
+
+        # The bookmarks have to be opened after the first cell exists and
+        # closed before the last one is popped: until then the table's current
+        # cell is still the previous row's.
+        self._add_table_cell()
+        self._doc_stack.append(self._make_paragraph())
+        self._append_bookmark_start(node.get('ids', []))
+        for child in name:
+            child.walkabout(self)
+        self._pop_and_append()
+
+        self._add_table_cell()
+        self._doc_stack.append(self._make_paragraph(preserve_space=True))
+        self._push_style('Literal')
+        if separator:
+            self._doc_stack[-1].add_text(separator + ' ')
+        for child in definition:
+            child.walkabout(self)
+        self._append_bookmark_end(node.get('ids', []))
+        self._doc_stack[-1].pop_style()
+        self._pop_and_append()
+
+        # The children were dispatched by hand above, into two different cells.
+        raise nodes.SkipNode
 
     def visit_seealso(self, node):
         self.visit_admonition_node(node, add_title=True)
@@ -2745,6 +2807,7 @@ class DocxTranslator(nodes.NodeVisitor):
             ('Field List', 'List Table', False, False),
             ('Option List', 'List Table', False, False),
             ('Horizontal List', 'List Table', False, False),
+            ('Production List', 'List Table', False, False),
             ('Admonition', 'Based Admonition', False, False),
             ('Admonition Descriptions', 'Based Admonition', False, True),
             ('Admonition Versionmodified', 'Based Admonition', True, True),

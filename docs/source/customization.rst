@@ -189,6 +189,10 @@ and the table styles are described in :numref:`table_style_table`.
           * item2
           * item3
           * item4
+   * - Production List
+     - .. productionlist:: example
+          expr: `term` ("+" `term`)*
+          term: "a" | "b"
    * - Admonition
      - .. admonition:: This is Admonition
 
