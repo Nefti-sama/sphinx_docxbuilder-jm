@@ -498,7 +498,7 @@ class Table(TableElement):
     def __init__(
             self, table_style, table_width, colsize_list, indent, align,
             keep_next, cant_split_row, set_table_header, rotation_header_height,
-            fit_content):
+            fit_content, no_wrap):
         """Set the table properties and start with an empty grid."""
         self._style = table_style
         self._table_width = table_width # (max table width(dax), table width(%))
@@ -518,6 +518,7 @@ class Table(TableElement):
         self._set_table_header = set_table_header
         self._rotation_header_height = rotation_header_height
         self._fit_content = fit_content
+        self._no_wrap = no_wrap
 
     @property
     def style(self):
@@ -659,7 +660,12 @@ class Table(TableElement):
         """
         grid_span = Table._get_grid_span(row, index)
         is_stub = index < self._stub
-        if self._fit_content:
+        if self._no_wrap:
+            # Word honours w:noWrap only where the cell is free to grow, so a
+            # cell that must not wrap cannot carry a preferred width as well.
+            cellsize = None
+            no_wrap = True
+        elif self._fit_content:
             cellsize = None
             no_wrap = is_stub
         else:
@@ -1284,7 +1290,7 @@ class DocxTranslator(nodes.NodeVisitor):
             self, table_style, table_width, colsize_list, is_indent, align=None,
             in_single_page=False, row_splittable=True,
             header_in_all_page=False, rotation_header_height=None,
-            fit_content=False, is_fixed_width=True):
+            fit_content=False, no_wrap=False, is_fixed_width=True):
         """Push a new table and the context its cells are laid out in.
 
         Returns the table, which the caller fills in through start_head,
@@ -1306,7 +1312,7 @@ class DocxTranslator(nodes.NodeVisitor):
             (max_table_width, table_width),
             colsize_list, indent, align,
             keep_next, not row_splittable, header_in_all_page,
-            rotation_header_height, fit_content)
+            rotation_header_height, fit_content, no_wrap)
         self._doc_stack.append(tbl)
         self._append_new_ctx(indent=0, right_indent=0, width=table_width)
         return tbl
@@ -2019,7 +2025,8 @@ class DocxTranslator(nodes.NodeVisitor):
                 classes, 'header-in-all-page', False),
             rotation_header_height=DocxTranslator._get_rotation_header_height(
                 classes),
-            fit_content=('colwidths-auto' in classes))
+            fit_content=('colwidths-auto' in classes),
+            no_wrap=('nowrap' in classes))
 
     def depart_tgroup(self, node):
         """Append the finished table."""

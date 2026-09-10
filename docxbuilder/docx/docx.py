@@ -1067,8 +1067,10 @@ def make_table(
     ``width`` is a fraction of the text width, or None for an automatic
     width; ``grid_col_list`` holds the column widths in twips.
     """
+    # Banded rows, but not banded columns: a table style that shades both
+    # bands the cells where they cross twice, which reads as a checkerboard.
     look_attrs = {
-        'w:noHBand': 'false', 'w:noVBand': 'false',
+        'w:noHBand': 'false', 'w:noVBand': 'true',
         'w:lastRow': 'false', 'w:lastColumn': 'false'
     }
     look_attrs['w:firstRow'] = 'true' if has_head else 'false'
