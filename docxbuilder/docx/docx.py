@@ -49,6 +49,14 @@ SVG_BLIP_EXT_URI = '{96DAC541-7B7A-43D3-8B79-37D633B846F1}'
 # through a stylesheet still draws empty.
 SVG_HREF_ATTRS = ('href', '{http://www.w3.org/1999/xlink}href')
 
+# A CSS custom property declaration, '--name: value', as written in a <style>
+# block or a style attribute.
+SVG_CSS_DECLARATION = re.compile(rb'(--[\w-]+)\s*:\s*([^;}]+)')
+# What an unresolvable var() becomes. 'none' is a legal value for the paint
+# properties var() is used for in practice, and drawing nothing beats
+# aborting the image.
+SVG_UNRESOLVED_VALUE = b'none'
+
 # All Word prefixes / namespace matches used in document.xml & core.xml.
 # LXML doesn't actually use prefixes (just the real namespace) , but these
 # make it easier to copy Word output more easily.
@@ -1885,6 +1893,84 @@ def inline_svg_references(imagepath):
     return etree.tostring(tree, xml_declaration=True, encoding='UTF-8')
 
 
+def split_top_level(text, separator=b','):
+    """Split on `separator`, ignoring separators nested inside parentheses.
+
+    'rgb(1, 2, 3), red' is two values, not four.
+    """
+    parts, depth, start = [], 0, 0
+    for index in range(len(text)):
+        char = text[index:index + 1]
+        if char == b'(':
+            depth += 1
+        elif char == b')':
+            depth -= 1
+        elif char == separator and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts]
+
+
+def resolve_css_variables(content):
+    """Return the SVG with every CSS ``var()`` replaced by its value.
+
+    Neither cairosvg nor Word implements custom properties, and cairosvg does
+    worse than ignore them: its color parser finds the '#rrggbb' inside
+    'var(--bg, #ffffff)' but reads the digits from the head of the string, so
+    the whole image fails to rasterise. Diagram exporters emit these -- every
+    recent draw.io SVG is full of them -- so the value is substituted here,
+    for the raster copy and the embedded vector alike.
+
+    A var() takes its fallback, or the value declared for the property
+    elsewhere in the file, or :data:`SVG_UNRESOLVED_VALUE`.
+    """
+    declared = dict(SVG_CSS_DECLARATION.findall(content))
+    # Right to left, so a var() nested in another's fallback resolves first.
+    end = len(content)
+    while True:
+        start = content.rfind(b'var(', 0, end)
+        if start == -1:
+            return content
+        depth, close = 0, -1
+        for index in range(start + 3, len(content)):
+            char = content[index:index + 1]
+            if char == b'(':
+                depth += 1
+            elif char == b')':
+                depth -= 1
+                if depth == 0:
+                    close = index
+                    break
+        if close == -1:       # unbalanced; leave the file alone from here
+            end = start
+            continue
+        arguments = split_top_level(content[start + 4:close])
+        if len(arguments) > 1 and arguments[1]:
+            value = arguments[1]
+        else:
+            value = declared.get(arguments[0], SVG_UNRESOLVED_VALUE).strip()
+        content = content[:start] + value + content[close + 1:]
+        end = start
+
+
+def prepare_svg(imagepath):
+    """Return the SVG rewritten for the two renderers, or None if untouched.
+
+    Inlines what it references and resolves its custom properties; see
+    :func:`inline_svg_references` and :func:`resolve_css_variables`. None
+    means the source needs neither and can be used as it is.
+    """
+    content = inline_svg_references(imagepath)
+    if content is None:
+        with open(imagepath, 'rb') as source:
+            raw = source.read()
+        if b'var(' not in raw:
+            return None
+        content = raw
+    return resolve_css_variables(content)
+
+
 def rasterize_svg(imagepath, content=None):
     '''Render an SVG to PNG bytes, for clients that can not draw the vector.
 
@@ -2497,7 +2583,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
                 # neither needs when the cache already holds them.
                 nonlocal svg, read
                 if not read:
-                    svg = inline_svg_references(imagepath)
+                    svg = prepare_svg(imagepath)
                     read = True
                 return svg
 

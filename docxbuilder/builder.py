@@ -152,8 +152,13 @@ def insert_all_toctrees(tree, docname, env, traversed):
     """
     tree = tree.deepcopy()
     env.apply_post_transforms(tree, docname)
-    for toctreenode in findall(tree, addnodes.toctree):
-        nodeid = 'docx_expanded_toctree%d' % id(toctreenode)
+    for index, toctreenode in enumerate(findall(tree, addnodes.toctree)):
+        # Numbered within the document rather than taken from
+        # id(toctreenode): that is the object's address, so it differs
+        # between runs, and it reaches the file as a bookmark name. Two
+        # builds of unchanged sources have to produce the same document.
+        nodeid = 'docx_expanded_toctree_%s_%d' % (
+            docname.replace('/', '_'), index)
         newnodes = nodes.container(ids=[nodeid])
         toctreenode['docx_expanded_toctree_refid'] = nodeid
         includefiles = toctreenode['includefiles']

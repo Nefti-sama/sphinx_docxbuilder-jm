@@ -115,6 +115,14 @@ Images an SVG pulls in with an ``href`` (another svg, a bitmap) are inlined as
 data URIs, so they survive the move into the docx. References made through CSS
 ``url()`` are not, and draw empty.
 
+CSS custom properties are substituted before either renderer sees the file,
+because neither cairosvg nor Word implements them. ``var(--bg, #ffffff)``
+becomes ``#ffffff``; a ``var()`` with no fallback takes the value declared for
+it elsewhere in the file, and one with neither becomes ``none``. Diagram
+exporters emit these constantly -- a recent draw.io SVG is full of them -- and
+without the substitution cairosvg fails the whole image with ``invalid literal
+for int() with base 16``.
+
 Directives
 ==========
 
