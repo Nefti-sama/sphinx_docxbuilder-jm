@@ -3,9 +3,11 @@ from docxbuilder.builder import DocxBuilder
 
 
 def setup(app):
+    """Register the docx builder and its configuration values with Sphinx."""
     app.add_builder(DocxBuilder)
 
     def default_docx_documents(conf):
+        """Build the default ``docx_documents`` entry: one file from the master doc."""
         start_doc = conf.master_doc
         filename = '%s.docx' % make_filename(conf.project)
         title = conf.project

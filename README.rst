@@ -14,6 +14,7 @@ Added:
   ``productionlist``, ``acks``, and PEP 695 type parameters in signatures
 * Per-admonition styles, so ``.. note::`` and ``.. warning::`` can look different
 * Sphinx 9 / docutils 0.22 compatibility (``findall``, ``FileOutput``)
+* Common color names for the highlight of ``:emphasize-lines:``
 
 Docxbuilder is a Sphinx extension to build docx formatted documents.
 
@@ -140,6 +141,42 @@ uses ``Admonition Note``, ``.. warning::`` uses ``Admonition Warning``, and a
 ``.. admonition:: My Title`` uses ``Admonition My Title``. Define the style in
 your style file to change how that one type looks. Types you do not define get
 a style created from ``Based Admonition``, so nothing breaks if it is missing.
+
+Code highlighting
+=================
+
+``:emphasize-lines:`` highlights a line with the ``highlight_color`` of the
+Pygments style, which is normally a hex string. A common color name is
+accepted too:
+
+.. code:: python
+
+   # in conf.py, or a style module on sys.path
+   from pygments.styles.default import DefaultStyle
+
+   class MyStyle(DefaultStyle):
+       highlight_color = 'lightgreen'
+
+   pygments_style = 'mystyle.MyStyle'
+
+Word does not take a color here: its ``w:highlight`` accepts only the fifteen
+names of the OOXML ``ST_HighlightColor`` list, and a file using any other name
+is invalid. So the requested color is snapped to the nearest name Word does
+have, matching hue before brightness. ``lightgreen`` and ``lime`` highlight
+green, ``orange`` and ``gold`` yellow, ``navy`` dark blue.
+
+Accepted names, beyond the Word ones themselves (``blue``, ``cyan``,
+``darkBlue``, ``darkCyan``, ``darkGreen``, ``darkMagenta``, ``darkRed``,
+``darkYellow``, ``green``, ``magenta``, ``red``, ``yellow``):
+
+   ``aqua``, ``chartreuse``, ``crimson``, ``fuchsia``, ``gold``, ``indigo``,
+   ``lightblue``, ``lightgreen``, ``lightpink``, ``lightyellow``, ``lime``,
+   ``maroon``, ``navy``, ``olive``, ``orange``, ``orchid``, ``pink``,
+   ``purple``, ``salmon``, ``skyblue``, ``teal``, ``turquoise``, ``violet``
+
+``#rgb`` and ``#rrggbb`` hex work as before. Anything else, including a grey
+or a name that is not in the list, falls back to yellow rather than failing
+the build.
 
 Style file
 ==========

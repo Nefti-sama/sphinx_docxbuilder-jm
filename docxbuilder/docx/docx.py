@@ -13,6 +13,11 @@
 
   Part of Python's docx module - http://github.com/mikemaccana/python-docx
   See LICENSE for licensing information.
+
+  --------
+
+  Modifications for sphinx_docxbuilder-jm by Nefti-sama
+  https://github.com/Nefti-sama/sphinx_docxbuilder-jm
 '''
 
 import base64
@@ -123,6 +128,7 @@ COVER_PAGE_PROPERTY_ITEMID = '{55AF091B-3C7A-41E3-B477-F2FDAA23CFDA}'
 #####################
 
 def xml_encode(value):
+    """Escape control characters as ``_xNNNN_``, as OOXML requires."""
     value = re.sub(r'_(?=x[0-9a-fA-F]{4}_)', r'_x005f_', value)
     return re.sub(r'[\x00-\x1f]', lambda m: '_x%04x_' % ord(m.group(0)), value)
 
@@ -148,6 +154,11 @@ def get_elements(xml, path):
 
 
 def parse_tag_list(tag):
+    """Split a tag specification into ``(tagname, attributes, text)``.
+
+    The specification is a tag name, or a list of the name followed by a text
+    string and/or an attribute dict, in either order.
+    """
     tagname = ''
     tagtext = ''
     attributes = {}
@@ -174,6 +185,7 @@ def parse_tag_list(tag):
 
 
 def extract_nsmap(tag, attributes):
+    """Return the namespace map needed by a tag and its attribute names."""
     result = {}
     ns_name = tag.split(':', 1) if not tag.startswith('{') else []
     if len(ns_name) > 1 and NSPREFIXES.get(ns_name[0]):
@@ -187,6 +199,11 @@ def extract_nsmap(tag, attributes):
     return result
 
 def make_element_tree(arg, _xmlns=None):
+    """Build an lxml element tree from nested tag specifications.
+
+    ``arg`` is a list whose first item is a tag specification (see
+    `parse_tag_list`) and whose remaining items are child specifications.
+    """
     tagname, attributes, tagtext = parse_tag_list(arg[0])
     children = arg[1:]
 
@@ -212,6 +229,7 @@ def make_element_tree(arg, _xmlns=None):
 
 
 def get_attribute(xml, path, name):
+    """Return an attribute of the first element matching ``path``, or None."""
     elems = get_elements(xml, path)
     if elems == []:
         return None
@@ -231,10 +249,15 @@ def fromstring(xml):
     return etree.fromstring('<dummy %s>%s</dummy>' % (ns, xml)).getchildren()
 
 def local_to_utc(value):
+    """Convert a naive local datetime to UTC, keeping its microseconds."""
     utc = datetime.datetime.utcfromtimestamp(time.mktime(value.timetuple()))
     return utc.replace(microsecond=value.microsecond)
 
 def convert_to_W3CDTF_string(value): # pylint: disable=invalid-name
+    """Format a date, datetime or date string as W3CDTF, or None.
+
+    None means the value is not a date this function recognises.
+    """
     if isinstance(value, datetime.datetime):
         if value.tzinfo is not None:
             offset = value.utcoffset()
@@ -312,6 +335,11 @@ CUSTOM_PROPERTY_TYPES = (
 )
 
 def check_core_props(key, value, core_props):
+    """Store ``value`` in ``core_props`` if ``key`` names a core property.
+
+    Returns whether the key was consumed; raises RuntimeError when the key is
+    a core property but the value cannot be used for it.
+    """
     core_prop_keys = set(key for _, key, _ in CORE_PROPERTY_KEYS)
     if key not in core_prop_keys:
         key = key[0].lower() + key[1:]
@@ -352,6 +380,11 @@ def check_core_props(key, value, core_props):
     raise RuntimeError('Invalid value type')
 
 def check_app_props(key, value, app_props):
+    """Store ``value`` in ``app_props`` if ``key`` names an extended property.
+
+    Returns whether the key was consumed; raises RuntimeError on a value of
+    the wrong type.
+    """
     check_type = APP_PROPERTY_KEYS.get(key)
     if check_type is None:
         key = key[0].upper() + key[1:]
@@ -368,6 +401,11 @@ def check_app_props(key, value, app_props):
     return True
 
 def check_cover_page_props(key, value, cover_page_props):
+    """Store ``value`` in ``cover_page_props`` if ``key`` names a cover page property.
+
+    Returns whether the key was consumed; raises RuntimeError on an
+    unusable value.
+    """
     if key not in COVER_PAGE_PROPERTY_KEYS:
         key = key[0].upper() + key[1:]
         if key not in COVER_PAGE_PROPERTY_KEYS:
@@ -383,6 +421,10 @@ def check_cover_page_props(key, value, cover_page_props):
     return True
 
 def check_custom_props(key, value, custom_props):
+    """Store ``value`` in ``custom_props``, which accepts any supported type.
+
+    Raises RuntimeError when no entry of `CUSTOM_PROPERTY_TYPES` matches.
+    """
     for prop_type, _, _ in CUSTOM_PROPERTY_TYPES:
         if not isinstance(value, prop_type):
             continue
@@ -391,6 +433,11 @@ def check_custom_props(key, value, custom_props):
     raise RuntimeError('Invalid value type')
 
 def classify_properties(props):
+    """Sort document properties into core, app, cover page and custom groups.
+
+    Returns ``(props_map, invalids)``, where ``invalids`` maps a rejected key
+    to the reason it was rejected.
+    """
     props_map = {'core': {}, 'app': {}, 'cover_page': {}, 'custom': {}}
     invalids = {}
     for key, value in props.items():
@@ -471,6 +518,7 @@ def get_doc_property_name(instruction):
     return match.group(1) if match.group(1) is not None else match.group(2)
 
 def get_run_text(run):
+    """Return the concatenated text of a run's ``w:t`` elements."""
     return ''.join(t.text or '' for t in run.findall(norm_name('w:t')))
 
 def make_field_run(style_source, contents):
@@ -486,12 +534,14 @@ def make_field_run(style_source, contents):
     return run
 
 def make_field_result_run(style_source, value):
+    """Make a run holding ``value`` as the cached result of a field."""
     text = etree.Element(norm_name('w:t'))
     text.set(norm_name('xml:space'), 'preserve')
     text.text = value
     return make_field_run(style_source, text)
 
 def make_field_char_run(style_source, char_type):
+    """Make a run holding a ``w:fldChar`` of the given type."""
     fld_char = etree.Element(norm_name('w:fldChar'))
     fld_char.set(norm_name('w:fldCharType'), char_type)
     return make_field_run(style_source, fld_char)
@@ -617,10 +667,12 @@ def bake_doc_property_fields(xml, prop_map):
     return changed
 
 def get_orient(section_prop):
+    """Return the page orientation of a section, ``portrait`` by default."""
     page_size = get_elements(section_prop, 'w:pgSz')[0]
     return page_size.attrib.get(norm_name('w:orient'), 'portrait')
 
 def rotate_orient(section_prop):
+    """Swap a section's page width and height, and return the section."""
     page_size = get_elements(section_prop, 'w:pgSz')[0]
     orient_attr = norm_name('w:orient')
     current_orient = page_size.attrib.get(orient_attr, 'portrait')
@@ -635,6 +687,7 @@ def rotate_orient(section_prop):
     return section_prop
 
 def set_title_page(section_prop, is_title_page):
+    """Turn a section's separate first page header and footer on or off."""
     value = 'true' if is_title_page else 'false'
     title_page = get_elements(section_prop, 'w:titlePg')
     if not title_page:
@@ -644,6 +697,7 @@ def set_title_page(section_prop, is_title_page):
     title_page[0].attrib[norm_name('w:val')] = value
 
 def set_page_number(section_prop, page_number=None):
+    """Set the starting page number of a section, or clear it when None."""
     page_number_type = get_elements(section_prop, 'w:pgNumType')
     if not page_number_type:
         if page_number is not None:
@@ -660,6 +714,11 @@ def set_page_number(section_prop, page_number=None):
         page_number_type[-1].attrib[norm_name('w:start')] = str(page_number)
 
 def copy_section_property(section_prop, is_continuous_section):
+    """Deep copy a section property.
+
+    A continuous section starts neither a new first page nor a new page
+    numbering, so both are cleared in the copy.
+    """
     section_prop = copy.deepcopy(section_prop)
     if is_continuous_section:
         set_title_page(section_prop, False)
@@ -667,6 +726,7 @@ def copy_section_property(section_prop, is_continuous_section):
     return section_prop
 
 def get_contents_width(section_property):
+    """Return the text width of a section in twips, columns accounted for."""
     width = get_contents_size(section_property, 'w:w', ('w:left', 'w:right'))
     cols_elems = get_elements(section_property, 'w:cols')
     if not cols_elems:
@@ -677,9 +737,11 @@ def get_contents_width(section_property):
     return (width - (space * (num - 1))) // num # TODO non equal col width
 
 def get_contents_height(section_property):
+    """Return the text height of a section in twips."""
     return get_contents_size(section_property, 'w:h', ('w:top', 'w:bottom'))
 
 def get_contents_size(section_property, size_prop, margin_props):
+    """Return a page dimension in twips, less the two given margins."""
     paper_size = get_elements(section_property, 'w:pgSz')[0]
     size = int(paper_size.get(norm_name(size_prop)))
     paper_margin = get_elements(section_property, 'w:pgMar')[0]
@@ -689,11 +751,13 @@ def get_contents_size(section_property, size_prop, margin_props):
     return size - margin
 
 def make_default_page_size():
+    """Make a US Letter portrait ``w:pgSz`` element."""
     return make_element_tree([['w:pgSz', {
         'w:w': '12240', 'w:h': '15840', 'w:orient': 'portrait',
     }]])
 
 def make_default_page_margin():
+    """Make a ``w:pgMar`` element with one inch margins."""
     return make_element_tree([['w:pgMar', {
         'w:top': '1440', 'w:right': '1440',
         'w:bottom': '1440', 'w:left': '1440',
@@ -703,20 +767,24 @@ def make_default_page_margin():
 # Paragraphs and Runs
 
 def get_properties_tree(prop):
+    """Convert a property element back into a tag specification tree."""
     tree = [[prop.tag, prop.attrib]]
     tree.extend((get_properties_tree(child_prop) for child_prop in prop))
     return tree
 
 def get_paragraph_properties(paragraph):
+    """Return a paragraph's properties as tag specification trees."""
     props = get_elements(paragraph, 'w:pPr')
     if not props:
         return []
     return [get_properties_tree(prop) for prop in props[0]]
 
 def get_paragraph_contents(paragraph):
+    """Return a paragraph's child elements, minus its ``w:pPr``."""
     return get_elements(paragraph, '*[not(self::w:pPr)]')
 
 def add_page_break_before_to_first_paragraph(xml):
+    """Make the first paragraph of ``xml`` start on a new page."""
     paragraphs = get_elements(xml, '//w:p')
     if not paragraphs:
         return
@@ -729,6 +797,7 @@ def add_page_break_before_to_first_paragraph(xml):
         para.append(make_element_tree([['w:pPr', tree]]))
 
 def make_run_style_property(style_id):
+    """Return the run property dict applying a character style, if any."""
     if style_id is None:
         return {}
     return {'w:rStyle': {'w:val': style_id}}
@@ -736,6 +805,11 @@ def make_run_style_property(style_id):
 def make_paragraph(
         indent, right_indent, style, align, keep_lines, keep_next, list_info,
         properties=None):
+    """Make a paragraph with the given properties and no content.
+
+    ``list_info`` is a ``(num_id, level)`` pair making the paragraph a list
+    item; ``properties`` holds extra property trees to append.
+    """
     style_tree = [['w:pPr']]
     if style is not None:
         style_tree.append([['w:pStyle', {'w:val': style}]])
@@ -767,6 +841,7 @@ def make_paragraph(
     return make_element_tree(paragraph_tree)
 
 def make_paragraph_spacing_property(**kwargs):
+    """Make a ``w:spacing`` tree from ``before``, ``after`` and ``line``."""
     attr = {}
     for key in ['before', 'after', 'line']:
         value = kwargs.get(key)
@@ -776,6 +851,7 @@ def make_paragraph_spacing_property(**kwargs):
     return [['w:spacing', attr]]
 
 def make_paragraph_shading_property(pattern, **kwargs):
+    """Make a ``w:shd`` tree from a fill pattern, ``color`` and ``fill``."""
     attr = {'w:val': pattern}
     if kwargs:
         for key in ['color', 'fill']:
@@ -786,6 +862,11 @@ def make_paragraph_shading_property(pattern, **kwargs):
     return [['w:shd', attr]]
 
 def make_paragraph_border_property(**kwargs):
+    """Make a ``w:pBdr`` tree from per-side border descriptions.
+
+    Each keyword names a side and takes a dict of border attributes, or None
+    to suppress that side's border.
+    """
     key_list = [
         ('size', 'w:sz'), ('space', 'w:space'), ('color', 'w:color'),
         ('shadow', 'w:shadow'), ('frame', 'w:frame')
@@ -808,6 +889,7 @@ def make_paragraph_border_property(**kwargs):
     return border_tree
 
 def make_border_info(border_attrs):
+    """Convert the attributes of a border element into a border description."""
     identity = lambda x: x
     to_bool = lambda x: x in ('true', '1')
     attr_list = [
@@ -823,11 +905,17 @@ def make_border_info(border_attrs):
     return border_info
 
 def make_section_prop_paragraph(section_prop):
+    """Make an empty paragraph carrying a section property."""
     para = make_element_tree([['w:p'], [['w:pPr']]])
     para[0].append(section_prop)
     return para
 
 def make_run(text, style, preserve_space):
+    """Make a text run in the given run style.
+
+    With ``preserve_space``, spacing is kept and newlines become breaks;
+    otherwise newlines collapse into spaces.
+    """
     run_tree = [['w:r']]
     run_prop = [['w:rPr']]
     for tagname, attrib in style.items():
@@ -849,6 +937,7 @@ def make_run(text, style, preserve_space):
     return make_element_tree(run_tree)
 
 def make_break_run():
+    """Make a run holding a single line break."""
     return make_element_tree([['w:r'], [['w:br']]])
 
 def make_inline_picture_run(
@@ -939,6 +1028,7 @@ def make_inline_picture_run(
     return make_element_tree(run_tree)
 
 def make_omath_paragraph(omath_elems):
+    """Make a centred ``m:oMathPara`` holding the given equations, line by line."""
     omath_paragraph = make_element_tree([
         ['m:oMathPara'],
         [['m:oMathParaPr'], [['m:jc', {'m:val': 'center'}]]],
@@ -951,6 +1041,7 @@ def make_omath_paragraph(omath_elems):
     return omath_paragraph
 
 def make_omath_run(equation):
+    """Make an ``m:oMath`` element from an equation, one run per line."""
     omath_tree = [['m:oMath']]
     equations = equation.split('\n')
     omath_tree.extend(
@@ -963,6 +1054,11 @@ def make_omath_run(equation):
 def make_table(
         style, width, indent, align, grid_col_list, has_head, has_first_column,
         properties=None):
+    """Make an empty table with the given style, width and column grid.
+
+    ``width`` is a fraction of the text width, or None for an automatic
+    width; ``grid_col_list`` holds the column widths in twips.
+    """
     look_attrs = {
         'w:noHBand': 'false', 'w:noVBand': 'false',
         'w:lastRow': 'false', 'w:lastColumn': 'false'
@@ -998,6 +1094,11 @@ def make_table(
     return make_element_tree(table_tree)
 
 def make_row(index, is_head, cant_split, set_tbl_header, height):
+    """Make an empty table row.
+
+    ``index`` selects the banding; ``cant_split`` keeps the row on one page,
+    ``set_tbl_header`` repeats it at the top of every page.
+    """
     row_style_attrs = {
         'w:evenHBand': ('true' if index % 2 != 0 else 'false'),
         'w:oddHBand': ('true' if index % 2 == 0 else 'false'),
@@ -1018,6 +1119,11 @@ def make_row(index, is_head, cant_split, set_tbl_header, height):
 
 def make_cell(index, is_first_column, cellsize, grid_span, vmerge, rotation,
               no_wrap=None, valign=None):
+    """Make an empty table cell.
+
+    ``grid_span`` spans columns, ``vmerge`` (``restart`` or ``continue``)
+    merges rows, and ``rotation`` turns the text sideways.
+    """
     cell_style = {
         'w:evenVBand': ('true' if index % 2 != 0 else 'false'),
         'w:oddVBand': ('true' if index % 2 == 0 else 'false'),
@@ -1043,6 +1149,7 @@ def make_cell(index, is_first_column, cellsize, grid_span, vmerge, rotation,
     return make_element_tree([['w:tc'], property_tree])
 
 def make_table_cell_margin_property(**kwargs):
+    """Make a ``w:tblCellMar`` tree from per-side margin widths."""
     margin_tree = [['w:tblCellMar']]
     for kind in ['top', 'left', 'bottom', 'right']:
         if kind in kwargs:
@@ -1051,9 +1158,15 @@ def make_table_cell_margin_property(**kwargs):
     return margin_tree
 
 def make_table_cell_spacing_property(val):
+    """Make a ``w:tblCellSpacing`` tree from a width value."""
     return [['w:tblCellSpacing', make_table_width_attr(val)]]
 
 def make_table_width_attr(val):
+    """Convert a width value into OOXML width attributes.
+
+    None gives no width, ``'auto'`` an automatic one, a float up to 1.0 a
+    percentage, and anything else a measure in twips.
+    """
     if val is None:
         return {'w:type': 'nil', 'w:w': '0'}
     if val == 'auto':
@@ -1065,6 +1178,7 @@ def make_table_width_attr(val):
 # Footnotes
 
 def make_footnote_reference(footnote_id, style_id):
+    """Make a run referring to a footnote by id."""
     run_tree = [
         ['w:r'],
         [['w:footnoteReference', {'w:id': str(footnote_id)}]],
@@ -1074,6 +1188,7 @@ def make_footnote_reference(footnote_id, style_id):
     return make_element_tree(run_tree)
 
 def make_footnote_ref(style_id):
+    """Make a run holding the footnote's own number, for use inside it."""
     run_tree = [
         ['w:r'],
         [['w:footnoteRef']],
@@ -1086,17 +1201,20 @@ def make_footnote_ref(style_id):
 # Annotations
 
 def make_bookmark_start(bookmark_id, name):
+    """Make the start element of a named bookmark."""
     return make_element_tree([
         ['w:bookmarkStart', {'w:id': str(bookmark_id), 'w:name': name}]
     ])
 
 def make_bookmark_end(bookmark_id):
+    """Make the end element of a bookmark."""
     return make_element_tree([['w:bookmarkEnd', {'w:id': str(bookmark_id)}]])
 
 
 # Hyperlinks
 
 def make_hyperlink(relationship_id, anchor):
+    """Make an empty hyperlink to a relationship, an anchor, or both."""
     attrs = {}
     if relationship_id is not None:
         attrs['r:id'] = relationship_id
@@ -1108,6 +1226,7 @@ def make_hyperlink(relationship_id, anchor):
 # Structured Document Tags
 
 def _make_toc_hyperlink(text, anchor):
+    """Make one table of contents entry: its text, a tab, and a page reference."""
     return [
         ['w:hyperlink', {'w:anchor': anchor, 'w:history': '1'}],
         [['w:r'], [['w:t', text]]],
@@ -1194,6 +1313,11 @@ def make_table_of_contents(
     return make_element_tree(toc_tree)
 
 def make_vml_textbox(style, color, contents, wrap_style=None):
+    """Make a run holding a VML rectangle with the given contents.
+
+    The rectangle grows to fit its text; ``wrap_style`` sets how the
+    surrounding text flows around it.
+    """
     rect_tree = [
         ['v:rect', {'style': style, 'fillcolor': color}],
         [['v:textbox', {'style': 'mso-fit-shape-to-text:true'}],
@@ -1207,21 +1331,25 @@ def make_vml_textbox(style, color, contents, wrap_style=None):
     return txbx
 
 def get_left(ind):
+    """Return the left indent of a ``w:ind`` element, ``w:start`` included."""
     left = ind.get(norm_name('w:left'), None)
     if left is not None:
         return left
     return ind.get(norm_name('w:start'), '0')
 
 def create_rels_path(path):
+    """Return the path of the relationship file belonging to ``path``."""
     return posixpath.join(
         posixpath.dirname(path), '_rels',
         posixpath.basename(path) + '.rels')
 
 def get_relation_target(relationships, rel_type):
+    """Return the target of the first relationship of ``rel_type``."""
     return get_attribute(
         relationships, 'pr:Relationship[@Type="%s"]' % rel_type, 'Target')
 
 def get_relation_ids(relationships):
+    """Return the numbers of the ``rIdN`` identifiers already in use."""
     if relationships is None:
         return []
     rids = []
@@ -1242,10 +1370,16 @@ def make_relationships(relationships):
 
 
 class StyleInfo(object):
+    """A style of the style file, and the properties it defines."""
     style_id_attr = norm_name('w:styleId')
     type_attr = norm_name('w:type')
 
     def __init__(self, style):
+        """Wrap a ``w:style`` element.
+
+        A style hidden until used has its ``w:semiHidden`` elements remembered,
+        so `used` can reveal it.
+        """
         self._style = style
         if get_elements(style, 'w:unhideWhenUsed'):
             self._semihidden_elems = get_elements(style, 'w:semiHidden')
@@ -1254,25 +1388,30 @@ class StyleInfo(object):
 
     @property
     def style_id(self):
+        """The identifier of the style."""
         return self._style.attrib[type(self).style_id_attr]
 
     @property
     def style_type(self):
+        """The kind of the style: paragraph, character, table or numbering."""
         return self._style.attrib[type(self).type_attr]
 
     def get_based_style_id(self):
+        """Return the id of the style this one is based on, or None."""
         based_on_elems = get_elements(self._style, 'w:basedOn')
         if not based_on_elems:
             return None
         return based_on_elems[-1].attrib[norm_name('w:val')]
 
     def get_border_info(self, kind):
+        """Return the attributes of one paragraph border side, or None."""
         border_elems = get_elements(self._style, 'w:pPr/w:pBdr/w:' + kind)
         if not border_elems:
             return None
         return border_elems[-1].attrib
 
     def get_run_style_property(self):
+        """Return the run properties of the style as ``(tag, attributes)`` pairs."""
         props = get_elements(self._style, 'w:rPr')
         if not props:
             return {}
@@ -1280,6 +1419,10 @@ class StyleInfo(object):
                 for prop in props[0] if not prop.tag.endswith('rPrChange')]
 
     def get_table_horizon_margin(self):
+        """Return the ``(left, right)`` cell margins of a table style in twips.
+
+        Either is None when the style does not set it in absolute units.
+        """
         cell_margin_elems = get_elements(self._style, 'w:tblPr/w:tblCellMar')
         if not cell_margin_elems:
             return (None, None)
@@ -1288,6 +1431,7 @@ class StyleInfo(object):
         type_attr = norm_name('w:type')
         w_attr = norm_name('w:w')
         def get_margin(elem):
+            """Return a margin in twips, or None when it is not in absolute units."""
             if elem is None or elem.get(type_attr) != 'dxa':
                 return None
             return int(elem.get(w_attr))
@@ -1296,12 +1440,14 @@ class StyleInfo(object):
         return (get_margin(left), get_margin(right))
 
     def used(self):
+        """Mark the style as used, so Word stops hiding it from the style list."""
         for semihidden in self._semihidden_elems:
             self._style.remove(semihidden)
         self._semihidden_elems = []
 
 
 class DocxDocument: # pylint: disable=too-many-public-methods
+    """A docx file opened for reading, usually the style file."""
     def __init__(self, docxfile):
         '''
           Constructor
@@ -1320,6 +1466,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         self.styles = self._get_rel_target_xml(REL_TYPE_STYLES)
 
     def _get_rel_target_path(self, rel_type):
+        """Return the path of the document part with ``rel_type``, or None."""
         target = get_relation_target(self.relationships, rel_type)
         if target is None:
             return None
@@ -1327,12 +1474,14 @@ class DocxDocument: # pylint: disable=too-many-public-methods
             posixpath.join(posixpath.dirname(self.docpath), target))
 
     def _get_rel_target_xml(self, rel_type):
+        """Return the parsed document part with ``rel_type``, or None."""
         target_path = self._get_rel_target_path(rel_type)
         if target_path is None:
             return None
         return self.get_xmltree(target_path)
 
     def _get_elements_until_target(self, target_elem_xpath):
+        """Return copies of the body elements up to the first match of an xpath."""
         body = get_elements(self.document, '/w:document/w:body')
         if not body:
             return []
@@ -1347,6 +1496,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         return elements
 
     def get_custom_xml_path(self, itemid):
+        """Return the path of the custom XML part with ``itemid``, or None."""
         rels = get_elements(
             self.relationships,
             'pr:Relationship[@Type="%s"]' % REL_TYPE_CUSTOM_XML)
@@ -1372,15 +1522,18 @@ class DocxDocument: # pylint: disable=too-many-public-methods
 
     @property
     def settings(self):
+        """The parsed settings part, or None."""
         return self._get_rel_target_xml(REL_TYPE_SETTINGS)
 
     @property
     def footnotes_relationships(self):
+        """The parsed relationships of the footnotes part."""
         return self.get_xmltree(
             create_rels_path(self._get_rel_target_path(REL_TYPE_FOOTNOTES)))
 
     @property
     def numbering_relationships(self):
+        """The parsed relationships of the numbering part."""
         return self.get_xmltree(
             create_rels_path(self._get_rel_target_path(REL_TYPE_NUMBERING)))
 
@@ -1399,6 +1552,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         '''
         val_attr = norm_name('w:val')
         def get_info(style):
+            """Return the ``(name, info)`` pair of a style, named by its id if unnamed."""
             info = StyleInfo(style)
             names = get_elements(style, 'w:name')
             style_name = names[0].attrib[val_attr] if names else info.style_id
@@ -1419,21 +1573,29 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         return styles[-1].attrib[norm_name('w:styleId')]
 
     def get_section_properties(self):
+        """Return every ``w:sectPr`` element of the document."""
         return get_elements(self.document, '//w:sectPr')
 
     def get_coverpage(self):
+        """Return a copy of the cover page content control, or None."""
         coverpages = get_elements(
             self.document,
             '//w:sdt[w:sdtPr/w:docPartObj/w:docPartGallery[@w:val="Cover Pages"]]')
         return copy.deepcopy(coverpages[0]) if coverpages else None
 
     def get_first_section_elements(self, n=1):
+        """Return the body elements up to the end of the nth section.
+
+        Used to lift the cover pages out of the style file.
+        """
         return self._get_elements_until_target('./*[.//w:pPr/w:sectPr][%d]' % n)
 
     def get_first_page_elements(self, n=1):
+        """Return the body elements up to the nth explicit page break."""
         return self._get_elements_until_target('./*[.//w:br[@w:type="page"]][%d]' % n)
 
     def get_image_numbers(self):
+        """Return the numbers of the ``word/media/imageN`` files in use."""
         img_nums = []
         for path in self.docx.namelist():
             match = re.match(r'word/media/image(\d+)\.\w+', path)
@@ -1442,6 +1604,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         return img_nums
 
     def get_custom_xml_numbers(self):
+        """Return the numbers of the ``customXml/itemN`` files in use."""
         nums = []
         for path in self.docx.namelist():
             match = re.match(r'customXml/item(?:Props)?(\d+)\.xml', path)
@@ -1450,11 +1613,17 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         return nums
 
     def collect_items(self, zip_docxfile, collected_files):
+        """Copy the named files from this document into ``zip_docxfile``."""
         # Add & compress support files
         for fname in collected_files:
             zip_docxfile.writestr(fname, self.docx.read(fname))
 
     def collect_relation_files(self, rel_files, rel_attrs, basedir):
+        """Add to ``rel_files`` the internal targets of ``rel_attrs``.
+
+        Targets are resolved against ``basedir``, and their own relationship
+        files are followed as well.
+        """
         for attr in rel_attrs:
             if attr.get('TargetMode', 'Internal') == 'External':
                 continue
@@ -1474,6 +1643,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
                     posixpath.dirname(filepath))
 
     def collect_all_relation_files(self, rel_attrs):
+        """Return every internal file reachable from ``rel_attrs``."""
         rel_files = set()
         self.collect_relation_files(
             rel_files, rel_attrs, posixpath.dirname(self.docpath))
@@ -1502,6 +1672,7 @@ class DocxDocument: # pylint: disable=too-many-public-methods
 ############
 # Numbering
     def get_numbering_style_id(self, style):
+        """Return the ``w:numId`` a named paragraph style refers to, or None."""
         style_elems = get_elements(self.styles, '/w:styles/w:style')
         for style_elem in style_elems:
             name_elem = get_elements(style_elem, 'w:name')[0]
@@ -1516,11 +1687,13 @@ class DocxDocument: # pylint: disable=too-many-public-methods
         return None
 
     def get_elems_from_numbering(self, elem_tag):
+        """Return elements matching ``elem_tag`` in the numbering part."""
         if self.numbering is None:
             return []
         return get_elements(self.numbering, elem_tag)
 
     def get_indent(self, style_id):
+        """Return the left indent a style defines, or None."""
         ind_elems = get_elements(
             self.styles,
             '/w:styles/w:style[@w:styleId="%s"]/w:pPr/w:ind' % style_id)
@@ -1531,11 +1704,14 @@ class DocxDocument: # pylint: disable=too-many-public-methods
 ##########
 
 class IdPool(object):
+    """Hands out identifiers, skipping the ones already taken."""
     def __init__(self, used_ids, init_id=1):
+        """Start handing out ids at ``init_id``, skipping the used ones."""
         self._used_ids = set(used_ids)
         self._next_id = init_id
 
     def next_id(self):
+        """Return the next unused id."""
         while self._next_id in self._used_ids:
             self._next_id += 1
         next_id = self._next_id
@@ -1543,13 +1719,16 @@ class IdPool(object):
         return next_id
 
 class IdElements(object):
+    """Elements indexed by an integer identifier attribute."""
     def __init__(self, elems, attr, to_int=int, init_id=0):
+        """Index ``elems`` by the integer value of ``attr``."""
         self._next_id = init_id
         self._elems = dict((to_int(elem.get(attr)), elem) for elem in elems)
         self._attr = attr
         self._to_int = to_int
 
     def next_id(self):
+        """Return the next id no element holds."""
         while self._next_id in self._elems:
             self._next_id += 1
         next_id = self._next_id
@@ -1557,15 +1736,23 @@ class IdElements(object):
         return next_id
 
     def append(self, elem):
+        """Add an element under the id its ``attr`` holds."""
         self._elems[self._to_int(elem.get(self._attr))] = elem
 
     def get(self, key, default=None):
+        """Return the element with ``key``, or ``default``."""
         return self._elems.get(self._to_int(key), default)
 
     def __iter__(self):
+        """Iterate over ``(id, element)`` pairs."""
         return iter(self._elems.items())
 
 def collect_used_rel_attrs(relationships, xml, used_rel_types):
+    """Return the attributes of the relationships ``xml`` actually needs.
+
+    A relationship is kept when its type is in ``used_rel_types`` or when its
+    id appears anywhere in ``xml``.
+    """
     if relationships is None:
         return []
     used_rel_attrs = []
@@ -1576,19 +1763,24 @@ def collect_used_rel_attrs(relationships, xml, used_rel_types):
     return used_rel_attrs
 
 class CoverPagePropertyInfo(object):
+    """Where the cover page properties live, or where they will be created."""
     def __init__(self, does_create, info):
+        """Record whether the cover page property part has to be created."""
         self.does_create = does_create
         self._path_or_id = info
 
     @property
     def path(self):
+        """The path of the existing part; meaningful when it is not created."""
         return self._path_or_id
 
     @property
     def id(self):
+        """The number of the part to create; meaningful when it is created."""
         return self._path_or_id
 
 def get_cover_page_prop_info(style_docx):
+    """Locate the cover page property part of a style file, or reserve a number for one."""
     path = style_docx.get_custom_xml_path(COVER_PAGE_PROPERTY_ITEMID)
     if path is None:
         id_pool = IdPool(style_docx.get_custom_xml_numbers())
@@ -1596,6 +1788,12 @@ def get_cover_page_prop_info(style_docx):
     return CoverPagePropertyInfo(False, path)
 
 def collect_referenced_footnotes(footnotes, xml):
+    """Return the footnotes a document needs, keyed by id.
+
+    Footnotes nothing refers to are dropped, while the separator footnotes
+    Word expects are kept, and created when the style file has none. Returns
+    ``(footnote_map, footnote_id_map, footnote_id_pool)``.
+    """
     id_attr = norm_name('w:id')
     ref_footnote_ids = set(
         f.get(id_attr) for f in get_elements(xml, '//w:footnoteReference'))
@@ -1612,6 +1810,7 @@ def collect_referenced_footnotes(footnotes, xml):
             footnote_type_set.add(ftype)
     footnote_id_pool = IdPool(int(fid) for fid in footnote_map)
     def make_footnote(footnote_id, footnote_type):
+        """Make one of the separator footnotes Word expects to find."""
         return make_element_tree([
             ['w:footnote', {
                 'w:type': footnote_type, 'w:id': footnote_id,
@@ -1709,6 +1908,7 @@ def rasterize_svg(imagepath, content=None):
 
 
 class DocxComposer: # pylint: disable=too-many-public-methods
+    """Composes a docx file, taking its styles from a style file."""
     def __init__(self, stylefile, cover_pages):
         '''
            Constructor
@@ -1758,16 +1958,24 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         self._table_margin_cache = {}
 
     def get_coverpage_elements(self, n=1):
+        """Return the first ``n`` pages of the style file, as cover pages."""
         cover_elems = self.style_docx.get_first_page_elements(n)
         if cover_elems:
             return cover_elems
         return []
 
     def new_id(self):
+        """Return a fresh id for a drawing or another numbered object."""
         self._id += 1
         return self._id
 
     def get_section_properties(self):
+        """Return the section properties of the style file, grouped by orientation.
+
+        Missing page size and margins are filled in with the defaults, and a
+        missing orientation is derived by rotating the other one. Returns
+        ``(first_orient, {'portrait': [...], 'landscape': [...]})``.
+        """
         result = {'portrait': [], 'landscape': []}
         section_props = self.style_docx.get_section_properties()
         if not section_props:
@@ -1786,11 +1994,13 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return first_orient, result
 
     def get_max_bookmark_id(self):
+        """Return the highest bookmark id currently in the document."""
         return get_max_attribute(
             get_elements(self.document, '//w:bookmarkStart'),
             norm_name('w:id'))
 
     def get_style_info(self, style_name):
+        """Return the :class:`StyleInfo` for a style name, matched case-insensitively."""
         style_info = self._style_info.get(style_name, None)
         if style_info is not None:
             return style_info
@@ -1800,12 +2010,17 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return None
 
     def get_style_info_from_id(self, style_id):
+        """Return the :class:`StyleInfo` with a style id, or None."""
         for style_info in self._style_info.values():
             if style_info.style_id == style_id:
                 return style_info
         return None
 
     def get_style_id(self, style_name, style_type):
+        """Return the id of a style of the expected type, or None.
+
+        Looking a style up counts as using it, so Word stops hiding it.
+        """
         if style_name is None:
             return None
         style_info = self.get_style_info(style_name)
@@ -1817,6 +2032,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return style_info.style_id
 
     def get_indent(self, style_name, default):
+        """Return the left indent of a paragraph style, or ``default``."""
         style_info = self.get_style_info(style_name)
         if style_info is None or style_info.style_type != 'paragraph':
             return default
@@ -1826,6 +2042,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return int(indent)
 
     def get_border_info(self, style_id, kind):
+        """Return one border side of a paragraph style, inherited from its base style if needed."""
         if style_id is None:
             return None
         style_info = self.get_style_info_from_id(style_id)
@@ -1837,6 +2054,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return self.get_border_info(style_info.get_based_style_id(), kind)
 
     def get_run_style_property(self, style_id):
+        """Return the run properties of a character style, merged with those of its base styles."""
         if style_id is None:
             return {}
         style_prop = self._run_style_property_cache.get(style_id)
@@ -1853,15 +2071,22 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return self._run_style_property_cache.setdefault(style_id, style_prop)
 
     def get_bullet_list_num_id(self, style_name):
+        """Return the ``w:numId`` a list style refers to, or None."""
         return self.style_docx.get_numbering_style_id(style_name)
 
     def get_table_cell_margin(self, style_id):
+        """Return the total horizontal space a table style takes from a cell's contents."""
         misc_margin = 8 * 2 * 10 # Miscellaneous margin (e.g. border width)
         left, right = self.get_table_horizon_margin(style_id)
         margin = left + right + misc_margin
         return margin
 
     def get_table_horizon_margin(self, style_id):
+        """Return the ``(left, right)`` cell margins of a table style in twips.
+
+        Margins the style leaves unset are taken from its base style, and
+        finally from Word's own defaults.
+        """
         default_margin = (115, 115)
         if style_id is None:
             return default_margin
@@ -2093,7 +2318,13 @@ class DocxComposer: # pylint: disable=too-many-public-methods
 
     def create_list_style(
             self, new_style_name, format_type, lvl_text, font, indent):
+        """Create a paragraph style that numbers or bullets its paragraphs.
+
+        The style gets a numbering definition of its own; see
+        `add_numbering_style` for ``format_type``, ``lvl_text`` and ``font``.
+        """
         def make_property_tree(new_style_id):
+            """Return the paragraph properties tying the style to a new numbering definition."""
             num_id = self.add_numbering_style(
                 1, lvl_text, format_type, indent, new_style_id, font)
             return [
@@ -2115,6 +2346,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
            Create a new empty paragraph style
         '''
         def make_property_tree(_):
+            """Return the paragraph properties: the spacing, a small font, and the rule."""
             property_tree = [
                 ['w:pPr'],
                 [['w:spacing', {
@@ -2139,6 +2371,11 @@ class DocxComposer: # pylint: disable=too-many-public-methods
     def _create_style(
             self, style_type, new_style_name, is_custom, is_hidden,
             based_style_name=None, make_property_tree=None):
+        """Add a style to the style file, unless that name is already taken.
+
+        ``make_property_tree`` is called with the new style id and returns the
+        property tree to append. Returns whether the style was created.
+        """
         if self.get_style_info(new_style_name) is not None:
             return False
         new_style_id = new_style_name
@@ -2167,6 +2404,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return True
 
     def _add_required_relationships(self, cover_page_prop_info):
+        """Add the relationships every document needs, and the cover page part when it is created."""
         relationships, id_pool = self._relationships_map['document']
         required_rel_types = (
             (REL_TYPE_STYLES, 'styles.xml'),
@@ -2187,6 +2425,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             })
 
     def add_hyperlink_relationship(self, target, part):
+        """Return the relationship id of an external target, adding it if new."""
         rid_map = self._hyperlink_rid_map.get(target)
         if rid_map is not None:
             rid = rid_map.get(part, None)
@@ -2253,6 +2492,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             read = False
 
             def load_svg():
+                """Return the SVG with its references inlined, reading the source at most once."""
                 # Both media parts come out of one read of the source, which
                 # neither needs when the cache already holds them.
                 nonlocal svg, read
@@ -2279,11 +2519,13 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return (rid, None)
 
     def get_footnote_id(self, key):
+        """Reserve a footnote id for ``key`` and return it."""
         fid = self._footnote_id_pool.next_id()
         self._footnote_id_map[fid] = key
         return fid
 
     def append_footnote(self, key, contents):
+        """Store the contents of the footnote registered under ``key``."""
         footnote = make_element_tree([['w:footnote']])
         footnote.extend(contents)
         self._footnote_map[key] = footnote
@@ -2399,6 +2641,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return make_element_tree(appprops_tree, NSPREFIXES['ep'])
 
     def make_custom(self, custom_props): # pylint: disable=no-self-use
+        """Create ``docProps/custom.xml`` from the user defined properties."""
         props_tree = [['Properties']]
         # User defined pid must start from 2
         for pid, (name, value) in enumerate(custom_props.items(), 2):
@@ -2415,6 +2658,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return make_element_tree(props_tree, xmlns)
 
     def make_coverpage_props_items(self, props):
+        """Create the cover page property part, its data storage properties and its relationships."""
         item_path = 'customXml/item%d.xml' % self._cover_page_prop_info.id
         item = self.make_cover_page_props(props)
         prop_path = 'customXml/itemProps%d.xml' % self._cover_page_prop_info.id
@@ -2424,12 +2668,14 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return ((item_path, item), (prop_path, prop), (rels_path, rels))
 
     def make_cover_page_props(self, props): # pylint: disable=no-self-use
+        """Create the cover page property part from the cover page properties."""
         props_tree = [['CoverPageProperties']]
         props_tree.extend(([[key, value]] for key, value in props.items()))
         xmlns = 'http://schemas.microsoft.com/office/2006/coverPageProps'
         return make_element_tree(props_tree, xmlns)
 
     def make_cover_page_data_storage_props(self): # pylint: disable=no-self-use
+        """Create the data storage properties identifying the cover page property part."""
         uri = 'http://schemas.microsoft.com/office/2006/coverPageProps'
         props_tree = [
             ['ds:datastoreItem', {'ds:itemID': COVER_PAGE_PROPERTY_ITEMID}],
@@ -2440,6 +2686,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return make_element_tree(props_tree)
 
     def make_item_rels(self, target): # pylint: disable=no-self-use
+        """Create the relationships of a custom XML item, pointing at its properties."""
         return make_relationships([{
             'Id': 'rId1',
             'Type': REL_TYPE_CUSTOM_XML_PROPS,
@@ -2447,6 +2694,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         }])
 
     def make_document_rels(self, stylerels):
+        """Create ``word/_rels/document.xml.rels`` from the new and inherited relationships."""
         rel_list = []
         docrel_list, _ = self._relationships_map['document']
         rel_list.extend(docrel_list)
@@ -2454,6 +2702,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return make_relationships(rel_list)
 
     def make_footnotes_rels(self, footnotes_rel_attrs):
+        """Create the footnote relationships, or None when there are none."""
         rel_list = []
         footnotes_rel_list, _ = self._relationships_map['footnotes']
         rel_list.extend(footnotes_rel_list)
@@ -2463,9 +2712,11 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         return make_relationships(rel_list)
 
     def make_numbering_rels(self, numbering_rel_attrs): # pylint: disable=no-self-use
+        """Create the numbering relationships inherited from the style file."""
         return make_relationships(numbering_rel_attrs)
 
     def make_root_rels(self): # pylint: disable=no-self-use
+        """Create ``_rels/.rels``, pointing at the document and its properties."""
         rel_list = [
             (REL_TYPE_CORE, 'docProps/core.xml'),
             (REL_TYPE_APP, 'docProps/app.xml'),
@@ -2477,6 +2728,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             for rid, (rtype, target) in enumerate(rel_list, 1))
 
     def make_footnotes(self):
+        """Create ``word/footnotes.xml``, numbering the collected footnotes."""
         footnotes = make_element_tree([['w:footnotes']])
         id_attr = norm_name('w:id')
         for fid, key in self._footnote_id_map.items():
@@ -2491,6 +2743,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
         used_num_ids = self.style_docx.collect_num_ids(inherited_rel_attrs)
         val_attr = norm_name('w:val')
         def update_used_num_ids(xml):
+            """Add every ``w:numId`` referenced in ``xml`` to the used set."""
             elems = get_elements(xml, '//w:numId')
             used_num_ids.update((int(num_id.get(val_attr)) for num_id in elems))
         update_used_num_ids(self.style_docx.styles)

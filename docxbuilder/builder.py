@@ -8,6 +8,9 @@
     :copyright:
         Copyright 2010 by shimizukawa at gmail dot com (Sphinx-users.jp).
     :license: BSD, see LICENSE for details.
+    :modified:
+        Modifications for sphinx_docxbuilder-jm by Nefti-sama
+        https://github.com/Nefti-sama/sphinx_docxbuilder-jm
 """
 
 import os
@@ -24,6 +27,7 @@ from docxbuilder.writer import DocxWriter, DocxTranslator, findall
 
 
 class DocxBuilder(Builder):
+    """Sphinx builder writing the documentation as docx files."""
     # pylint: disable=attribute-defined-outside-init
     name = 'docx'
     format = 'docx'
@@ -31,17 +35,25 @@ class DocxBuilder(Builder):
     default_translator_class = DocxTranslator
 
     def init(self):
+        """Set up the image directory, logger and document list."""
         self.imagedir = '_images'
         self._logger = logging.getLogger('docxbuilder')
         self._docx_documents = []
 
     def get_outdated_docs(self):
+        """Report outdated documents; every build writes all documents."""
         return 'pass'
 
     def get_target_uri(self, docname, typ=None):
+        """Return the target URI of a document, which is its name."""
         return docname
 
     def prepare_writing(self, docnames):
+        """Drop invalid ``docx_documents`` entries and create the writer.
+
+        Entries naming an unknown document or an empty filename are warned about
+        and skipped.
+        """
         for entry in self.config.docx_documents:
             if entry[0] not in self.env.all_docs:
                 self._logger.warning(
@@ -59,6 +71,11 @@ class DocxBuilder(Builder):
         self.writer = DocxWriter(self)
 
     def assemble_doctree(self, master, toctree_only):
+        """Return the doctree of ``master`` with every toctree expanded in place.
+
+        With ``toctree_only``, only the toctrees of the master document are kept,
+        not its own content.
+        """
         tree = self.env.get_doctree(master)
         if toctree_only:
             doc = new_document('docxbuilder/builder.py')
@@ -74,6 +91,7 @@ class DocxBuilder(Builder):
         return tree
 
     def make_numfig_map(self):
+        """Map ``docname/node_id`` to a figure number, per figure type."""
         numfig_map = {}
         for docname, item in self.env.toc_fignumbers.items():
             for figtype, info in item.items():
@@ -87,6 +105,7 @@ class DocxBuilder(Builder):
         return numfig_map
 
     def make_numsec_map(self):
+        """Map ``docname/node_id`` to a section number."""
         numsec_map = {}
         for docname, info in self.env.toc_secnumbers.items():
             for node_id, num in info.items():
@@ -95,6 +114,7 @@ class DocxBuilder(Builder):
         return numsec_map
 
     def write(self, *_ignored): # pylint: disable=arguments-differ
+        """Write every valid ``docx_documents`` entry to a docx file."""
         docnames = self.env.all_docs
 
         self._logger.info('preparing documents... ', nonl=True)
@@ -113,6 +133,7 @@ class DocxBuilder(Builder):
             self._logger.info('done')
 
     def write_doc(self, docname, doctree):
+        """Write one doctree to ``docname`` under the output directory."""
         outfilename = os.path.join(self.outdir, docname)
         ensuredir(os.path.dirname(outfilename))
         # FileOutput handles bytes; BinaryFileOutput is removed in docutils 0.24
@@ -120,9 +141,15 @@ class DocxBuilder(Builder):
         self.writer.write(doctree, destination)
 
     def finish(self):
+        """Finish the build; nothing is left to do."""
         pass
 
 def insert_all_toctrees(tree, docname, env, traversed):
+    """Return a copy of ``tree`` with the documents of each toctree inlined.
+
+    ``traversed`` collects the documents already inlined, so a document
+    included twice is expanded only once.
+    """
     tree = tree.deepcopy()
     env.apply_post_transforms(tree, docname)
     for toctreenode in findall(tree, addnodes.toctree):
