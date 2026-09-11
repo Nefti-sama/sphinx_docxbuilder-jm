@@ -1556,8 +1556,13 @@ class DocxTranslator(nodes.NodeVisitor):
                 for c in node.get('classes') if c.startswith('admonition-')),
                          'Admonition %s' % node.tagname.capitalize())
             self._docx.create_style('table', style, 'Based Admonition', True)
+        # An admonition must not be torn across a page break: in_single_page
+        # keeps every row with the next one, row_splittable=False adds
+        # w:cantSplit so no single row breaks either. Word still splits one
+        # that cannot fit on a page at all.
         tbl = self._append_table(
-            style, table_width, [1.0], is_indent, align, fit_content=False)
+            style, table_width, [1.0], is_indent, align, fit_content=False,
+            in_single_page=True, row_splittable=False)
         tbl.start_head()
         tbl.add_row()
         self._add_table_cell()
