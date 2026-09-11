@@ -355,7 +355,27 @@ The following reStructuredText show how to use the custom styles.
       * - Row2: Col1
         - Row2: Col2
 
-.. warning:: Currently, only table elements and character elements are enable to be applied user defined styles.
+A class name that maps to a *paragraph* style can be put on any element, with
+``:class:`` or with the ``rst-class`` directive.  The style becomes the default
+for the paragraphs that element and its children produce:
+
+.. code-block:: rst
+
+   .. rst-class:: custom-body
+
+   This paragraph uses the Custom Body style.
+
+   .. container:: custom-body
+
+      So does this one, and every other paragraph in the container.
+
+.. note::
+   Some elements are drawn in a style chosen by the builder, which wins over
+   the class: titles and subtitles, captions and legends, literal blocks,
+   footnote text, list items and definition lists, and table cells.  An
+   admonition keeps the table style its ``admonition-*`` class selects.  A
+   class that maps to a character style applies to inline elements only, which
+   is what a ``role`` produces.
 
 .. _`coverpage_section`:
 

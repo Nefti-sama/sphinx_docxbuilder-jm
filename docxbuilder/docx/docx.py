@@ -804,6 +804,14 @@ def add_page_break_before_to_first_paragraph(xml):
     else:
         para.append(make_element_tree([['w:pPr', tree]]))
 
+def twips(size):
+    """Return a twip measure as the whole number OOXML requires.
+
+    Widths and indents are computed in centimetres and percentages, so they
+    arrive as floats; Word reads a fractional measure as a corrupt document.
+    """
+    return str(int(round(size)))
+
 def make_run_style_property(style_id):
     """Return the run property dict applying a character style, if any."""
     if style_id is None:
@@ -831,9 +839,9 @@ def make_paragraph(
         ])
     if indent is not None:
         ind_attrs['w:leftChars'] = '0'
-        ind_attrs['w:left'] = str(indent)
+        ind_attrs['w:left'] = twips(indent)
     if right_indent is not None:
-        ind_attrs['w:right'] = str(right_indent)
+        ind_attrs['w:right'] = twips(right_indent)
     if ind_attrs:
         style_tree.append([['w:ind', ind_attrs]])
     if align is not None:
@@ -1082,7 +1090,7 @@ def make_table(
     property_tree = [
         ['w:tblPr'],
         [['w:tblW', width_attr]],
-        [['w:tblInd', {'w:w': str(indent), 'w:type': 'dxa'}]],
+        [['w:tblInd', {'w:w': twips(indent), 'w:type': 'dxa'}]],
         [['w:tblLook', look_attrs]],
     ]
     if style is not None:
@@ -1223,13 +1231,38 @@ def make_bookmark_end(bookmark_id):
 
 # Hyperlinks
 
-def make_hyperlink(relationship_id, anchor):
-    """Make an empty hyperlink to a relationship, an anchor, or both."""
+#: Word keeps a hyperlink screen tip in an ST_String attribute, which the
+#: format caps at 255 characters.
+MAX_TOOLTIP_LENGTH = 255
+
+def normalize_tooltip(text):
+    """Return a screen tip Word accepts, or None if there is nothing to show.
+
+    The tip is a single line in Word, so whitespace is collapsed, and it is cut
+    to the length the format allows rather than written out too long.
+    """
+    if not text:
+        return None
+    tooltip = ' '.join(str(text).split())
+    if not tooltip:
+        return None
+    if len(tooltip) > MAX_TOOLTIP_LENGTH:
+        tooltip = tooltip[:MAX_TOOLTIP_LENGTH - 1] + '\u2026'
+    return tooltip
+
+def make_hyperlink(relationship_id, anchor, tooltip=None):
+    """Make an empty hyperlink to a relationship, an anchor, or both.
+
+    A tooltip becomes the screen tip Word shows while hovering the link.
+    """
     attrs = {}
     if relationship_id is not None:
         attrs['r:id'] = relationship_id
     if anchor is not None:
         attrs['w:anchor'] = anchor
+    tooltip = normalize_tooltip(tooltip)
+    if tooltip is not None:
+        attrs['w:tooltip'] = tooltip
     hyperlink_tree = [['w:hyperlink', attrs]]
     return make_element_tree(hyperlink_tree)
 
@@ -2359,7 +2392,7 @@ class DocxComposer: # pylint: disable=too-many-public-methods
             [['w:lvlJc', {'w:val': 'left'}]],
             [['w:numFmt', {'w:val': typ}]],
             [['w:pPr'], [['w:ind', {
-                'w:left': str(indent), 'w:hanging': str(int(indent * 0.75))
+                'w:left': twips(indent), 'w:hanging': twips(indent * 0.75)
             }]]],
         ]
         if style_id is not None:

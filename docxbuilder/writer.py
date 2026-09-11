@@ -218,6 +218,14 @@ def convert_to_cm_size(twip_size):
     cmperin = 2.54
     return twip_size / twipperin * cmperin
 
+def convert_cm_to_twip(cm_size):
+    """Convert a centimetre length into twips (1/1440 inch), the unit OOXML uses."""
+    if cm_size is None:
+        return None
+    twipperin = 1440.0
+    cmperin = 2.54
+    return cm_size / cmperin * twipperin
+
 def adjust_size(max_size, size, other_size):
     """Scale size down to max_size, keeping the aspect ratio.
 
@@ -236,6 +244,80 @@ def has_caption(image_node):
     index = parent.index(image_node)
     caption_index = parent.first_child_matching_class(nodes.caption, index + 1)
     return caption_index is not None
+
+#: The docutils "align" values that place a block on the page.  The image
+#: directive also accepts top / middle / bottom, which align an *inline* image
+#: against the surrounding text and have no meaning for a block of its own.
+BLOCK_ALIGN_VALUES = frozenset(('left', 'center', 'right', 'default'))
+
+def block_align(node):
+    """Return the alignment a node asks for, if a block can be aligned by it.
+
+    ``top``, ``middle`` and ``bottom`` are dropped: they position an inline
+    image relative to the text baseline, which a paragraph of its own has no
+    use for.  Unknown values are dropped as well, leaving the style's own
+    alignment in place.
+    """
+    if node is None:
+        return None
+    align = node.get('align')
+    return align if align in BLOCK_ALIGN_VALUES else None
+
+def image_block_align(node):
+    """Return the alignment of a block-level image, looking through its link.
+
+    An image with a ``target`` is wrapped in a reference, and it is the
+    reference that gets the paragraph, so the reference has to read the
+    alignment of the image it wraps.
+    """
+    align = block_align(node)
+    if align is None and is_image_link(node):
+        align = block_align(node[0])
+    return align
+
+def is_image_link(node):
+    """Return true if the node is a link whose whole content is one image.
+
+    That is the shape an image with a ``target`` takes: the reference stands in
+    for the image as the block, so it is the reference that gets the paragraph.
+    """
+    return (isinstance(node, nodes.reference)
+            and len(node) == 1 and isinstance(node[0], nodes.image))
+
+def figure_image(node):
+    """Return the image a figure is built around, or None if it has none.
+
+    The image is the figure's first child, or the reference wrapping it when
+    the image carries a ``target``. A caption or a legend ends the search, so
+    a picture inside a legend is not mistaken for the figure's own.
+    """
+    for child in node.children:
+        if isinstance(child, nodes.image):
+            return child
+        if is_image_link(child):
+            return child[0]
+        if isinstance(child, (nodes.caption, nodes.legend)):
+            break
+    return None
+
+def image_block_properties(node):
+    """Return the (style, align, keep_next) of the paragraph a block image gets.
+
+    ``node`` is the image, or the reference wrapping it when the image has a
+    ``target``; either way the figure it may sit in is its parent, and it is
+    the figure that decides the style and the alignment then.
+    """
+    if isinstance(node.parent, nodes.figure):
+        return 'Figure', block_align(node.parent), has_caption(node)
+    return 'Image', image_block_align(node), False
+
+def format_secnumber(secnumber):
+    """Return a section number as the prefix the document displays it with.
+
+    Headings, the table of contents and references to a section all use this,
+    so a link reads the way the heading it points at does.
+    """
+    return '.'.join(map(str, secnumber)) + ' '
 
 def is_first_class_child(node):
     """Return true if the node is the first of its own class among its siblings."""
@@ -302,6 +384,14 @@ class DocxWriter(writers.Writer):
 
 SECTION_CLASS_PATTERN = re.compile(
     r'^docx-section(?:-(portrait|landscape))?-(\d+)$')
+
+# Node types that read their own classes and must not have a class style
+# applied on top of them: inline resolves character styles itself, and an
+# admonition turns its 'admonition-*' class into the table style it is drawn
+# with.  nodes.Admonition covers the docutils admonitions; the three tagnames
+# are the Sphinx nodes that are drawn as admonitions without subclassing it.
+CLASS_STYLE_EXCLUDED_TAGS = frozenset(
+    ('inline', 'seealso', 'versionmodified', 'todo_node'))
 
 def to_error_string(contents):
     """Return a description of a contents object for an error message."""
@@ -445,15 +535,15 @@ class Paragraph(ParagraphElement):
         self._text_style_stack.append(
             docx.make_run_style_property(hyperlink_style_id))
 
-    def end_hyperlink(self, rid, anchor):
+    def end_hyperlink(self, rid, anchor, tooltip=None):
         """Finish a hyperlink and append it.
 
         Without a target there is nothing to link to, so the runs are appended
-        plainly instead.
+        plainly instead, and the tooltip has nothing to hang on either.
         """
         self._text_style_stack.pop()
         if rid is not None or anchor is not None:
-            hyperlink = docx.make_hyperlink(rid, anchor)
+            hyperlink = docx.make_hyperlink(rid, anchor, tooltip)
             hyperlink.extend(self._contents_stack.pop())
             self._contents_stack[-1].append(hyperlink)
         else:
@@ -1192,6 +1282,7 @@ class DocxTranslator(nodes.NodeVisitor):
             self._number_list_indent = number_list_indents[0]
         self._default_paragraph_style_stack = []
         self._append_default_paragraph_style('Body Text')
+        self._class_style_stack = []
 
     def asbytes(self):
         """Return the finished document as the bytes of a .docx file."""
@@ -1223,6 +1314,64 @@ class DocxTranslator(nodes.NodeVisitor):
         """Yield the character style names mapped to the classes."""
         custom_styles = self._builder.config.docx_style_names
         return (custom_styles[c] for c in classes if c in custom_styles)
+
+    def _push_class_style(self, node):
+        """Apply the style a "rst-class" names, whatever node it is put on.
+
+        HTML writes every class into the class attribute, where CSS can act on
+        it; this is the general analogue.  A class listed in docx_style_names
+        resolves to a paragraph style, which becomes the default for the
+        paragraphs the node and its children produce, or failing that to a
+        character style, which is pushed onto the paragraph being built.
+
+        A paragraph made with an explicit style of its own - a title, a
+        caption, a literal block - is unaffected, and so are the nodes in
+        CLASS_STYLE_EXCLUDED_TAGS, which consume their classes themselves.
+
+        Returns a token for _unwind_class_style, or None if nothing was pushed.
+        """
+        if not isinstance(node, nodes.Element):
+            return None
+        if (node.tagname in CLASS_STYLE_EXCLUDED_TAGS
+                or isinstance(node, nodes.Admonition)):
+            return None
+        classes = node.get('classes', [])
+        if not classes:
+            return None
+        style_name = self._get_custom_style(classes, 'paragraph')
+        if style_name is not None:
+            self._append_default_paragraph_style(style_name)
+            return ('paragraph', None)
+        style_name = self._get_custom_style(classes, 'character')
+        if style_name is not None and isinstance(self._doc_stack[-1], Paragraph):
+            # Remember the paragraph itself: by the time the node departs, its
+            # own depart method may already have popped it off the doc stack.
+            target = self._doc_stack[-1]
+            self._push_style(style_name)
+            return ('character', target)
+        return None
+
+    def _unwind_class_style(self, node):
+        """Drop what _push_class_style pushed for the node, if anything.
+
+        Everything pushed above the node is dropped with it, so a visit method
+        that raises SkipNode part way through a subtree cannot leak a style
+        into the rest of the document.
+        """
+        for index in range(len(self._class_style_stack) - 1, -1, -1):
+            if self._class_style_stack[index][0] is node:
+                break
+        else:
+            return
+        while len(self._class_style_stack) > index:
+            _node, token = self._class_style_stack.pop()
+            if token is None:
+                continue
+            kind, target = token
+            if kind == 'paragraph':
+                self._pop_default_paragraph_style()
+            else:
+                target.pop_style()
 
     def _append_default_paragraph_style(self, style_name):
         """Push a style used by paragraphs that ask for none of their own."""
@@ -1388,11 +1537,11 @@ class DocxTranslator(nodes.NodeVisitor):
         for node_id in ids:
             num = self._numsec_map.get('%s/#%s' % (self._docname_stack[-1], node_id))
             if num:
-                return '.'.join(map(str, num)) + ' '
+                return format_secnumber(num)
         # First section of each file has no hash
         num = self._numsec_map.get('%s/' % self._docname_stack[-1], None)
         if num:
-            return '.'.join(map(str, num)) + ' '
+            return format_secnumber(num)
         return None
 
     def _get_numfig(self, figtype, ids):
@@ -1494,9 +1643,23 @@ class DocxTranslator(nodes.NodeVisitor):
                     % (cls, node.tagname), location=node)
 
     def dispatch_visit(self, node):
-        """Check the node's classes, then dispatch to its visit method."""
+        """Check the node's classes, apply them, then dispatch to its visit."""
         self._check_section_class(node)
-        return nodes.NodeVisitor.dispatch_visit(self, node)
+        self._class_style_stack.append((node, self._push_class_style(node)))
+        try:
+            return nodes.NodeVisitor.dispatch_visit(self, node)
+        except BaseException:
+            # SkipNode and SkipDeparture both mean dispatch_depart will never
+            # run for this node, so unwind here rather than leak the style.
+            self._unwind_class_style(node)
+            raise
+
+    def dispatch_departure(self, node):
+        """Dispatch to the node's depart method, then drop its class style."""
+        try:
+            return nodes.NodeVisitor.dispatch_departure(self, node)
+        finally:
+            self._unwind_class_style(node)
 
     def _convert_math(self, latex, node):
         """Convert LaTeX to OMML, warning and falling back to the raw text."""
@@ -1608,14 +1771,7 @@ class DocxTranslator(nodes.NodeVisitor):
         self._append_bookmark_start(node.get('ids', []))
 
         if not isinstance(self._doc_stack[-1], Paragraph):
-            if isinstance(node.parent, nodes.figure):
-                style = 'Figure'
-                align = node.parent.get('align')
-                keep_next = has_caption(node)
-            else:
-                style = 'Image'
-                align = None
-                keep_next = False
+            style, align, keep_next = image_block_properties(node)
             self._doc_stack.append(self._make_paragraph(
                 self._ctx_stack[-1].indent, self._ctx_stack[-1].right_indent,
                 style=style, align=align, keep_next=keep_next))
@@ -1867,7 +2023,9 @@ class DocxTranslator(nodes.NodeVisitor):
 
         A parsed-literal has markup of its own, so it is built run by run
         instead. Line numbers need a two column table; without them the block is
-        one paragraph. Short blocks are kept together on a page.
+        one paragraph. Short blocks are kept together on a page. ``:force:``
+        highlights code the lexer cannot read, rather than falling back to plain
+        text.
         """
         self._append_bookmark_start(node.get('ids', []))
         text = node.astext()
@@ -1884,7 +2042,11 @@ class DocxTranslator(nodes.NodeVisitor):
         linenos = node.get(
             'linenos',
             (node.rawsource.count('\n') >= self._linenothreshold - 1))
-        highlight_args = node.get('highlight_args', {})
+        # A copy: the arguments are the node's own dictionary, and force is
+        # this build's answer to the question, not something to leave behind on
+        # the node for the next builder to read.
+        highlight_args = dict(node.get('highlight_args', {}))
+        highlight_args['force'] = node.get('force', False)
         config = self._builder.config
         opts = (config.highlight_options
                 if language == config.highlight_language else {})
@@ -2094,13 +2256,15 @@ class DocxTranslator(nodes.NodeVisitor):
 
         Word has no alignment for a block of content, so the figure is aligned
         by indenting it: the width it does not use becomes margin on one side or
-        split between both.
+        split between both. Without a width of its own the figure is as wide as
+        the picture it holds, so that an aligned figure has room to move and a
+        caption wraps under the picture instead of across the whole column.
         """
         if self._is_landscape_figure(node):
             self._set_page_oriented()
         self._append_bookmark_start(node.get('ids', []))
         paragraph_width = self._ctx_stack[-1].paragraph_width
-        width = convert_to_twip_size(node.get('width', '100%'), paragraph_width)
+        width = self._get_figure_width(node, paragraph_width)
         delta_width = paragraph_width - width
         align = node.get('align', 'left')
         if align == 'left':
@@ -2614,12 +2778,24 @@ class DocxTranslator(nodes.NodeVisitor):
             self._doc_stack.append(None) # Marker for depart_reference to pop
             # The reference stands on its own, so it needs a paragraph.
             # depart_reference finds the None and knows to pop that paragraph.
-            # Get align because parent may be a figure element
+            if is_image_link(node):
+                # An image with a :target: hands its block over to this
+                # reference, so the paragraph the image would have made in
+                # visit_image_node is made here, with the same properties.
+                style, align, keep_next = image_block_properties(node)
+            else:
+                # Get align because parent may be a figure element
+                style, align, keep_next = None, block_align(node.parent), False
             self._doc_stack.append(self._make_paragraph(
                 self._ctx_stack[-1].indent, self._ctx_stack[-1].right_indent,
-                align=node.parent.get('align')))
+                style=style, align=align, keep_next=keep_next))
         self._doc_stack[-1].begin_hyperlink(
             self._docx.get_style_id('Hyperlink', 'character'))
+        secnumber = node.get('secnumber')
+        if secnumber:
+            # The number belongs to the link, as it does in HTML, so that it
+            # reads and highlights as one with the title that follows it.
+            self._doc_stack[-1].add_text(format_secnumber(secnumber))
 
     def depart_reference(self, node):
         """Finish the hyperlink, targeting a bookmark or an external URL.
@@ -2640,7 +2816,7 @@ class DocxTranslator(nodes.NodeVisitor):
             rid = None
             anchor = make_bookmark_name(
                 self._docname_stack[-1], node.get('refid'))
-        self._doc_stack[-1].end_hyperlink(rid, anchor)
+        self._doc_stack[-1].end_hyperlink(rid, anchor, node.get('reftitle'))
         if self._doc_stack[-2] is None:
             del self._doc_stack[-2]
             self._pop_and_append()
@@ -2777,27 +2953,10 @@ class DocxTranslator(nodes.NodeVisitor):
         self._append_bookmark_end(node.get('ids', []))
 
     def visit_image(self, node):
-        """Insert an image, found by its uri relative to the source.
-
-        Extensions write generated images to the image directory or the output
-        directory instead, so both are tried.
-        """
-        def get_filepath(self, node):
-            """Return the path of the image file, trying the output directories too."""
-            uri = node['uri']
-            if uri.find('://') != -1:
-                raise RuntimeError('Not support remote image files yet')
-            filepath = os.path.join(self._builder.srcdir, uri)
-            if not os.path.exists(filepath):
-                # Some extensions output images in imagedir
-                filepath = os.path.join(
-                    self._builder.outdir, self._builder.imagedir, uri)
-            if not os.path.exists(filepath):
-                # Some extensions output images in outdir
-                filepath = os.path.join(self._builder.outdir, uri)
-            return filepath
+        """Insert an image, found by its uri relative to the source."""
         self.visit_image_node(
-            node, node.get('alt', node['uri']), get_filepath)
+            node, node.get('alt', node['uri']),
+            DocxTranslator._get_image_filepath)
 
     def visit_raw(self, node):
         """Insert raw docx markup, at the top level of the document only.
@@ -3365,16 +3524,17 @@ class DocxTranslator(nodes.NodeVisitor):
             parent_indent = self._bullet_list_indents[list_level - 1]
         return self._bullet_list_indents[list_level] - parent_indent
 
-    def _get_image_scaled_size(self, node, filename):
+    def _get_image_scaled_size(self, node, filename, quiet=False):
         """Return the size to draw an image at, in centimetres.
 
         A missing dimension is taken from the file, keeping the aspect ratio,
         then the result is scaled down to fit both the paragraph width and the
-        page height.
+        page height. A caller measuring ahead of the image itself passes
+        ``quiet`` so a bad length is reported once, where it is drawn.
         """
         paragraph_width = self._ctx_stack[-1].paragraph_width
-        width = self._get_cm_size(node, 'width', paragraph_width)
-        height = self._get_cm_size(node, 'height')
+        width = self._get_cm_size(node, 'width', paragraph_width, quiet)
+        height = self._get_cm_size(node, 'height', quiet=quiet)
 
         if width is None and height is None:
             width, height = get_image_size(filename)
@@ -3400,13 +3560,65 @@ class DocxTranslator(nodes.NodeVisitor):
 
         return width, height
 
-    def _get_cm_size(self, node, attr, max_width=0):
+    def _get_image_filepath(self, node):
+        """Return the path of an image file, trying the output directories too.
+
+        Extensions write generated images to the image directory or the output
+        directory instead of next to the source, so both are tried.
+        """
+        uri = node['uri']
+        if uri.find('://') != -1:
+            raise RuntimeError('Not support remote image files yet')
+        filepath = os.path.join(self._builder.srcdir, uri)
+        if not os.path.exists(filepath):
+            # Some extensions output images in imagedir
+            filepath = os.path.join(
+                self._builder.outdir, self._builder.imagedir, uri)
+        if not os.path.exists(filepath):
+            # Some extensions output images in outdir
+            filepath = os.path.join(self._builder.outdir, uri)
+        return filepath
+
+    def _get_figure_width(self, node, paragraph_width):
+        """Return the width of a figure, in twips.
+
+        ``:figwidth:`` decides it when the figure has one. Otherwise the figure
+        is as wide as the picture it holds, and falls back to the whole column
+        when that picture cannot be measured here -- a diagram an extension
+        renders later, a missing file, or no image at all.
+        """
+        width = self._get_cm_size(node, 'width', paragraph_width)
+        if width is None:
+            image = figure_image(node)
+            if image is not None:
+                width = self._get_image_drawn_width(image)
+        if width is None:
+            return paragraph_width
+        return convert_cm_to_twip(width)
+
+    def _get_image_drawn_width(self, node):
+        """Return the width an image is drawn at, in cm, or None if unknown.
+
+        A figure needs the size before the image itself is visited. Anything
+        that goes wrong here goes wrong again in visit_image_node, which reports
+        it, so this one stays quiet and leaves the width undecided.
+        """
+        try:
+            filepath = self._get_image_filepath(node)
+            if filepath is None or not os.path.exists(filepath):
+                return None
+            return self._get_image_scaled_size(node, filepath, quiet=True)[0]
+        except Exception: # pylint: disable=broad-except
+            return None
+
+    def _get_cm_size(self, node, attr, max_width=0, quiet=False):
         """Return a length attribute of the node in cm, warning if it will not parse."""
         try:
             return convert_to_cm_size(
                 convert_to_twip_size(node.get(attr), max_width))
         except (RuntimeError, ValueError, OverflowError) as e:
-            self._logger.warning(e, location=node)
+            if not quiet:
+                self._logger.warning(e, location=node)
             return None
 
     def _collect_outlines(self, node, maxdepth):
@@ -3428,7 +3640,7 @@ class DocxTranslator(nodes.NodeVisitor):
             ref = outline[0]
             secnum = ref.get('secnumber')
             if secnum is not None:
-                text = '.'.join(map(str, secnum)) + ' ' + ref.astext()
+                text = format_secnumber(secnum) + ref.astext()
             else:
                 text = ref.astext()
             outlines.append((
